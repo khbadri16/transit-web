@@ -5,6 +5,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Clock,
+  Copyright,
   Delete,
   Eraser,
   Eye,
@@ -12,6 +13,7 @@ import {
   History,
   Keyboard,
   Loader2,
+  Mail,
   Plus,
   ScrollText,
   Ship,
@@ -282,8 +284,10 @@ function App() {
 
   /** Which DCP field currently shows the Arabic keyboard (by key). */
   const [kbField, setKbField] = useState<string | null>(null);
-  /** Live DCP paper collapsed with the << button. */
+  /** Live DCP paper collapsed with the << button (desktop). */
   const [paperCollapsed, setPaperCollapsed] = useState(false);
+  /** Live DCP paper slid in as a drawer (phones only). */
+  const [mobilePaperOpen, setMobilePaperOpen] = useState(false);
   const dcpInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const counts = useMemo(() => {
@@ -316,6 +320,11 @@ function App() {
   const paperAvailable = form.dcp_enabled;
   const showPaper = paperAvailable && !paperCollapsed;
 
+  /** Pre-filled email link for the "Report a bug" button. */
+  const bugReportSubject = "Bug Report - Transit Document Generator";
+  const bugReportHref =
+    "mailto:kh.badri16@gmail.com?subject=" + encodeURIComponent(bugReportSubject);
+
   const flash = (message: string, type: Toast["type"]) => {
     setToast({ message, type });
     window.setTimeout(() => setToast(null), 3200);
@@ -325,7 +334,10 @@ function App() {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value, type, checked } = e.target;
-    if (name === "dcp_enabled" && !checked) setKbField(null);
+    if (name === "dcp_enabled" && !checked) {
+      setKbField(null);
+      setMobilePaperOpen(false);
+    }
     setForm((prev) => ({
       ...prev,
       [name]: type === "checkbox" ? checked : value,
@@ -657,7 +669,7 @@ function App() {
           </aside>
         )}
 
-        {/* Re-open button when the paper is hidden */}
+        {/* Re-open button when the paper is hidden (desktop) */}
         {paperAvailable && paperCollapsed && (
           <button
             onClick={() => setPaperCollapsed(false)}
@@ -669,6 +681,57 @@ function App() {
             <span className="paper-reopen-label">معاينة</span>
           </button>
         )}
+
+        {/* Phones: >> tab on the left edge slides the paper in */}
+        {paperAvailable && !mobilePaperOpen && (
+          <button
+            onClick={() => setMobilePaperOpen(true)}
+            className="paper-reopen flex lg:hidden"
+            title="إظهار المعاينة"
+            aria-label="إظهار المعاينة"
+          >
+            <ChevronsRight size={16} />
+            <span className="paper-reopen-label">معاينة</span>
+          </button>
+        )}
+
+        {/* Phones: backdrop while the paper drawer is open */}
+        {paperAvailable && mobilePaperOpen && (
+          <div
+            className="drawer-backdrop fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden"
+            onClick={() => setMobilePaperOpen(false)}
+          />
+        )}
+
+        {/* Phones: the DCP paper as a left drawer over the form */}
+        <aside
+          className={`fixed inset-y-0 left-0 z-50 w-[92vw] max-w-md flex flex-col border-r border-slate-800 bg-[#0c101c]/95 backdrop-blur-md transition-transform duration-300 lg:hidden ${
+            paperAvailable && mobilePaperOpen ? "translate-x-0" : "-translate-x-full"
+          }`}
+        >
+          <div className="px-4 pt-4 pb-3 flex items-center justify-between gap-2" dir="rtl">
+            <h2 className="text-sm font-bold text-white flex items-center gap-2 min-w-0">
+              <Eye size={16} className="text-indigo-400 shrink-0" />
+              معاينة مباشرة — تصريح باستيراد المنتوج
+            </h2>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-[10px] text-slate-500 border border-slate-700 rounded-full px-2 py-0.5">
+                للقراءة فقط
+              </span>
+              <button
+                onClick={() => setMobilePaperOpen(false)}
+                className="paper-toggle"
+                title="إخفاء المعاينة"
+                aria-label="إخفاء المعاينة"
+              >
+                <ChevronsLeft size={16} />
+              </button>
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto px-4 pb-6">
+            <DcpPaper dcp={form.dcp} />
+          </div>
+        </aside>
 
         {/* Main column */}
         <main className="flex-1 min-w-0 h-screen overflow-y-auto">
@@ -997,16 +1060,6 @@ function App() {
                       );
                     })}
 
-                    {/* Inline paper preview for narrow windows */}
-                    <details className="lg:hidden rounded-xl border border-slate-700/70 bg-slate-900/50 overflow-hidden">
-                      <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-slate-300 flex items-center gap-2 hover:text-white transition-colors">
-                        <Eye size={15} className="text-indigo-400" />
-                        معاينة الورقة (مباشر — للقراءة فقط)
-                      </summary>
-                      <div className="p-3 pt-0">
-                        <DcpPaper dcp={form.dcp} />
-                      </div>
-                    </details>
                   </div>
                 )}
               </section>
@@ -1169,6 +1222,25 @@ function App() {
                 </button>
               </div>
             </div>
+
+            {/* Footer — copyright + report a bug (far bottom) */}
+            <footer className="mt-auto pt-8 flex flex-col-reverse sm:flex-row items-center justify-between gap-3 border-t border-slate-800/60">
+              <p className="flex items-center gap-1.5 text-xs text-slate-500 text-center">
+                <Copyright size={13} className="shrink-0" />
+                <span>
+                  {new Date().getFullYear()} Kh Badereddine. All rights reserved.
+                </span>
+              </p>
+              <a
+                href={bugReportHref}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-slate-400 border border-slate-700/70 bg-slate-800/40 transition-colors hover:text-white hover:border-indigo-500/50 hover:bg-indigo-500/10"
+                title="Report a bug"
+                aria-label="Report a bug by email"
+              >
+                <Mail size={14} className="shrink-0" />
+                <span>Report a bug</span>
+              </a>
+            </footer>
           </div>
         </main>
 

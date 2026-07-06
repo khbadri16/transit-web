@@ -1,0 +1,4 @@
+fastapi==0.115.14
+uvicorn[standard]==0.35.0
+docxtpl==0.20.1
+python-multipart==0.0.20

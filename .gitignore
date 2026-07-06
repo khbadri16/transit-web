@@ -1,0 +1,21 @@
+# Node / frontend
+node_modules/
+dist/
+*.local
+
+# Python / backend
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Environment secrets (VITE_API_URL for prod lives in Vercel, not in git)
+.env
+.env.local
+.env.production
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

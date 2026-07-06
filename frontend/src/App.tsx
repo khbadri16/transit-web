@@ -42,7 +42,7 @@ type DcpProduit = {
 type GeneratePayload = {
   transit_name: string;
   client_name: string;
-  p_c: string;
+  company_name: string;
   marchandise_type: string;
   weight_of_all_containers: string;
   force_uppercase: boolean;
@@ -230,6 +230,10 @@ const SIZE_ACTIVE: Record<Size, string> = {
 /** Marque shown on MISE A QUAI: always 01TC{size}. */
 const marqueFor = (size: Size) => `01TC${size}`;
 
+/** Shipping companies — one is chosen per generation and printed on every
+ *  MISE A QUAI. "OTHER" lets the user type a custom company name. */
+const COMPANIES: string[] = ["CMA", "AKKON", "MSC", "HMM", "WHITE LINE", "COSCO"];
+
 const sanitizeForFilename = (s: string) =>
   s.trim().replace(/[\\/:*?"<>|]+/g, "_").replace(/\s+/g, "_") || "DOCUMENTS";
 
@@ -240,7 +244,8 @@ const sanitizeForFilename = (s: string) =>
 type FormState = {
   transit_name: string;
   client_name: string;
-  p_c: string;
+  company_choice: string; // "" | one of COMPANIES | "OTHER"
+  company_custom: string; // free text when company_choice === "OTHER"
   marchandise_type: string;
   weight_of_all_containers: string;
   force_uppercase: boolean;
@@ -253,7 +258,8 @@ type FormState = {
 const initialForm: FormState = {
   transit_name: "",
   client_name: "",
-  p_c: "",
+  company_choice: "",
+  company_custom: "",
   marchandise_type: "",
   weight_of_all_containers: "",
   force_uppercase: true,
@@ -287,10 +293,15 @@ function App() {
   }, [form.containers]);
 
   /* The three parts are independent — any complete part can be generated. */
+  /** Resolved company name — always uppercase, custom text when "OTHER". */
+  const companyName = (
+    form.company_choice === "OTHER" ? form.company_custom.trim() : form.company_choice
+  ).toUpperCase();
+
   const transitReady =
     form.transit_name.trim() !== "" &&
     form.client_name.trim() !== "" &&
-    form.p_c.trim() !== "" &&
+    companyName !== "" &&
     form.containers.length > 0 &&
     form.containers.every((c) => c.number.trim() !== "");
   const dcpReady = form.dcp_enabled;
@@ -470,10 +481,15 @@ function App() {
 
   const applyHistoryEntry = (entry: HistoryEntry) => {
     const p = entry.payload;
+    const savedCompany = (p.company_name ?? "").trim().toUpperCase();
     setForm({
       transit_name: p.transit_name ?? "",
       client_name: p.client_name ?? "",
-      p_c: p.p_c ?? "",
+      company_choice: savedCompany
+        ? COMPANIES.includes(savedCompany) ? savedCompany : "OTHER"
+        : "",
+      company_custom:
+        savedCompany && !COMPANIES.includes(savedCompany) ? savedCompany : "",
       marchandise_type: p.marchandise_type ?? "",
       weight_of_all_containers: p.weight_of_all_containers ?? "",
       force_uppercase: p.force_uppercase ?? true,
@@ -520,7 +536,7 @@ function App() {
     const payload: GeneratePayload = {
       transit_name: form.transit_name.trim(),
       client_name: form.client_name.trim(),
-      p_c: form.p_c.trim(),
+      company_name: companyName,
       marchandise_type: form.marchandise_type.trim(),
       weight_of_all_containers: form.weight_of_all_containers.trim(),
       force_uppercase: form.force_uppercase,
@@ -730,17 +746,6 @@ function App() {
                       style={upper}
                     />
                   </Field>
-                  <Field label="P/C" required>
-                    <input
-                      className="input"
-                      type="text"
-                      name="p_c"
-                      value={form.p_c}
-                      onChange={handleInputChange}
-                      placeholder="P/C"
-                      style={upper}
-                    />
-                  </Field>
                   <Field label="Merchandise type">
                     <input
                       className="input"
@@ -798,6 +803,50 @@ function App() {
                     <Plus size={16} /> <span className="hidden sm:inline">Add container</span>
                     <span className="sm:hidden">Add</span>
                   </button>
+                </div>
+
+                {/* Shipping company — chosen once, printed on every Mise à Quai */}
+                <div className="mb-5">
+                  <label className="text-sm font-medium text-slate-300">
+                    Shipping company <span className="text-indigo-400">*</span>
+                    <span className="text-xs text-slate-500 font-normal">
+                      {" "}— one per generation, printed on every Mise à Quai
+                    </span>
+                  </label>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    {[...COMPANIES, "OTHER"].map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() =>
+                          setForm((prev) => ({
+                            ...prev,
+                            company_choice: prev.company_choice === c ? "" : c,
+                          }))
+                        }
+                        className={`px-3 py-1.5 rounded-lg border text-xs font-bold tracking-wide transition-colors ${
+                          form.company_choice === c
+                            ? "bg-indigo-500/25 border-indigo-400/70 text-indigo-100"
+                            : "border-slate-700 text-slate-400 hover:border-indigo-500/40 hover:text-slate-200"
+                        }`}
+                      >
+                        {c === "OTHER" ? "Other…" : c}
+                      </button>
+                    ))}
+                    {form.company_choice === "OTHER" && (
+                      <input
+                        className="input !w-48 flex-none"
+                        type="text"
+                        value={form.company_custom}
+                        onChange={(e) =>
+                          setForm((prev) => ({ ...prev, company_custom: e.target.value }))
+                        }
+                        placeholder="COMPANY NAME"
+                        style={{ textTransform: "uppercase" }}
+                        autoFocus
+                      />
+                    )}
+                  </div>
                 </div>
 
                 {/* Live summary */}
@@ -1076,7 +1125,8 @@ function App() {
               {!canGenerate ? (
                 <p className="text-xs text-slate-500 mb-3">
                   Every part is optional — complete any one of them to generate: transit
-                  documents (names + containers), the DCP declaration, or the tariff annex.
+                  documents (names + shipping company + containers), the DCP declaration,
+                  or the tariff annex.
                 </p>
               ) : (
                 <p className="text-xs text-slate-400 mb-3 flex flex-wrap items-center gap-x-1.5 gap-y-1">

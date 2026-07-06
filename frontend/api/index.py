@@ -120,7 +120,7 @@ class GenerateRequest(BaseModel):
     # Part 1 — transit documents
     transit_name: str = ""
     client_name: str = ""
-    p_c: str = ""  # P/C — printed on MISE A QUAI only
+    company_name: str = ""  # shipping company — printed on every MISE A QUAI
     marchandise_type: str = ""
     weight_of_all_containers: str = ""
     force_uppercase: bool = True
@@ -189,14 +189,14 @@ def generate(req: GenerateRequest) -> StreamingResponse:
     # --- Part 1: transit static fields (+ optional uppercase mutation) ----
     transit_base = strip_transit_prefix(req.transit_name)
     client_name = req.client_name.strip()
-    p_c = req.p_c.strip()
+    company_name = req.company_name.strip()
     marchandise = req.marchandise_type.strip()
     weight = req.weight_of_all_containers.strip()
 
     if force_upper:
         transit_base = transit_base.upper()
         client_name = client_name.upper()
-        p_c = p_c.upper()
+        company_name = company_name.upper()
         marchandise = marchandise.upper()
 
     transit_bare = transit_base                                   # BON / MISE
@@ -293,7 +293,7 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                         render_to_bytes(TPL_MISE, {
                             **common,
                             "transit_name": transit_bare,
-                            "p_c": p_c,
+                            "company_name": company_name,
                             "container_number": num,
                             "container_size": c.size,
                             "container_marque": f"01TC{c.size}",  # always 01TC{size}

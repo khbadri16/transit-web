@@ -70,6 +70,7 @@ DCP_DATE_FIELDS = {"تاريخ_الاستراد", "الفاتورة_تاريخ",
 
 LRE = chr(0x202A)  # LEFT-TO-RIGHT EMBEDDING
 PDF = chr(0x202C)  # POP DIRECTIONAL FORMATTING
+LRM = chr(0x200E)  # LEFT-TO-RIGHT MARK
 _AR = (0x0590, 0x08FF), (0xFB50, 0xFDFF), (0xFE70, 0xFEFF)
 ARABIC_CHAR = re.compile("[" + "".join(chr(a) + "-" + chr(b) for a, b in _AR) + "]")
 
@@ -89,7 +90,12 @@ def bidi_keep_as_typed(value: str) -> str:
             return value  # starts with Arabic -> natural RTL flow already
         if ch.isalpha():
             return LRE + value + PDF
-    return LRE + value + PDF if value else value
+    if not value:
+        return value
+    # Digits/punctuation only (dates, amounts): besides embedding, anchor a
+    # left-to-right mark after each "/" so Word cannot re-order the segments
+    # of dd/mm/yyyy inside right-to-left paragraphs.
+    return LRE + value.replace("/", "/" + LRM) + PDF
 
 
 # --------------------------------------------------------------------------

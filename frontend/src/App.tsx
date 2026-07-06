@@ -320,10 +320,11 @@ function App() {
   const paperAvailable = form.dcp_enabled;
   const showPaper = paperAvailable && !paperCollapsed;
 
-  /** Pre-filled email link for the "Report a bug" button. */
+  /** Opens Gmail's compose page (works in any browser, no mail app needed). */
   const bugReportSubject = "Bug Report - Transit Document Generator";
   const bugReportHref =
-    "mailto:kh.badri16@gmail.com?subject=" + encodeURIComponent(bugReportSubject);
+    "https://mail.google.com/mail/?view=cm&fs=1&to=kh.badri16@gmail.com&su=" +
+    encodeURIComponent(bugReportSubject);
 
   const flash = (message: string, type: Toast["type"]) => {
     setToast({ message, type });
@@ -1233,6 +1234,8 @@ function App() {
               </p>
               <a
                 href={bugReportHref}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-slate-400 border border-slate-700/70 bg-slate-800/40 transition-colors hover:text-white hover:border-indigo-500/50 hover:bg-indigo-500/10"
                 title="Report a bug"
                 aria-label="Report a bug by email"

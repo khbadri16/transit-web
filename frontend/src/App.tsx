@@ -42,6 +42,7 @@ type DcpProduit = {
 type GeneratePayload = {
   transit_name: string;
   client_name: string;
+  p_c: string;
   marchandise_type: string;
   weight_of_all_containers: string;
   force_uppercase: boolean;
@@ -239,6 +240,7 @@ const sanitizeForFilename = (s: string) =>
 type FormState = {
   transit_name: string;
   client_name: string;
+  p_c: string;
   marchandise_type: string;
   weight_of_all_containers: string;
   force_uppercase: boolean;
@@ -251,6 +253,7 @@ type FormState = {
 const initialForm: FormState = {
   transit_name: "",
   client_name: "",
+  p_c: "",
   marchandise_type: "",
   weight_of_all_containers: "",
   force_uppercase: true,
@@ -287,6 +290,7 @@ function App() {
   const transitReady =
     form.transit_name.trim() !== "" &&
     form.client_name.trim() !== "" &&
+    form.p_c.trim() !== "" &&
     form.containers.length > 0 &&
     form.containers.every((c) => c.number.trim() !== "");
   const dcpReady = form.dcp_enabled;
@@ -469,6 +473,7 @@ function App() {
     setForm({
       transit_name: p.transit_name ?? "",
       client_name: p.client_name ?? "",
+      p_c: p.p_c ?? "",
       marchandise_type: p.marchandise_type ?? "",
       weight_of_all_containers: p.weight_of_all_containers ?? "",
       force_uppercase: p.force_uppercase ?? true,
@@ -515,6 +520,7 @@ function App() {
     const payload: GeneratePayload = {
       transit_name: form.transit_name.trim(),
       client_name: form.client_name.trim(),
+      p_c: form.p_c.trim(),
       marchandise_type: form.marchandise_type.trim(),
       weight_of_all_containers: form.weight_of_all_containers.trim(),
       force_uppercase: form.force_uppercase,
@@ -721,6 +727,17 @@ function App() {
                       value={form.client_name}
                       onChange={handleInputChange}
                       placeholder="e.g. ACME CORP"
+                      style={upper}
+                    />
+                  </Field>
+                  <Field label="P/C" required>
+                    <input
+                      className="input"
+                      type="text"
+                      name="p_c"
+                      value={form.p_c}
+                      onChange={handleInputChange}
+                      placeholder="P/C"
                       style={upper}
                     />
                   </Field>

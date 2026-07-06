@@ -70,6 +70,8 @@ DCP_DATE_FIELDS = {"تاريخ_الاستراد", "الفاتورة_تاريخ",
 
 LRE = chr(0x202A)  # LEFT-TO-RIGHT EMBEDDING
 PDF = chr(0x202C)  # POP DIRECTIONAL FORMATTING
+RLM = chr(0x200F)  # RIGHT-TO-LEFT MARK (invisible)
+LRM = chr(0x200E)  # LEFT-TO-RIGHT MARK (invisible)
 _AR = (0x0590, 0x08FF), (0xFB50, 0xFDFF), (0xFE70, 0xFEFF)
 ARABIC_CHAR = re.compile("[" + "".join(chr(a) + "-" + chr(b) for a, b in _AR) + "]")
 
@@ -88,8 +90,15 @@ def bidi_keep_as_typed(value: str) -> str:
         if ARABIC_CHAR.match(ch):
             return value  # starts with Arabic -> natural RTL flow already
         if ch.isalpha():
-            return LRE + value + PDF
-    return LRE + value + PDF if value else value
+            # Latin-first value: keep it one left-to-right unit, and put an
+            # invisible RTL mark on each side so neighbouring item numbers
+            # like "14)" can no longer merge into it.
+            return RLM + LRE + value + PDF + RLM
+    if not value:
+        return value
+    # Digits-only values (dates, amounts): same guards, plus an invisible
+    # LTR anchor after each "/" so Word keeps dd/mm/yyyy in the typed order.
+    return RLM + LRE + value.replace("/", "/" + LRM) + PDF + RLM
 
 
 # --------------------------------------------------------------------------

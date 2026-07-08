@@ -39,6 +39,7 @@ TEMPLATE_DIR = BASE_DIR / "templates"
 TPL_BON = "BON DE COMMANDE.docx"        # rendered once
 TPL_LETTRE = "LETTRE D'ENGAGEMENT.docx"   # rendered once
 TPL_MISE = "MISE A QUAI L.docx"         # rendered once PER container
+TPL_MISE_AKKON = "MISE A QUAI L - AKKON.docx"  # AKKON variant — adds BL number
 TPL_DCP = "DCP.docx"                    # rendered once (if enabled)
 TPL_ANNEXE = "ANNEXE.docx"              # rendered once (if products present)
 
@@ -121,6 +122,7 @@ class GenerateRequest(BaseModel):
     transit_name: str = ""
     client_name: str = ""
     company_name: str = ""  # shipping company — printed on every MISE A QUAI
+    bl_number: str = ""      # AKKON only — printed on every AKKON MISE A QUAI
     marchandise_type: str = ""
     weight_of_all_containers: str = ""
     force_uppercase: bool = True
@@ -190,6 +192,7 @@ def generate(req: GenerateRequest) -> StreamingResponse:
     transit_base = strip_transit_prefix(req.transit_name)
     client_name = req.client_name.strip()
     company_name = req.company_name.strip()
+    bl_number = req.bl_number.strip()
     marchandise = req.marchandise_type.strip()
     weight = req.weight_of_all_containers.strip()
 
@@ -197,7 +200,11 @@ def generate(req: GenerateRequest) -> StreamingResponse:
         transit_base = transit_base.upper()
         client_name = client_name.upper()
         company_name = company_name.upper()
+        bl_number = bl_number.upper()
         marchandise = marchandise.upper()
+
+    # AKKON gets a dedicated Mise à Quai template that also prints the BL number.
+    is_akkon = company_name.strip().upper() == "AKKON"
 
     transit_bare = transit_base                                   # BON / MISE
     transit_lettre = f"TRANSIT {transit_base}".strip() if transit_base else "TRANSIT"
@@ -288,16 +295,22 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                         name = f"MISE_A_QUAI_{sanitize_filename(num)}_{i}.docx"
                         i += 1
                     used_names.add(name)
+                    mise_ctx = {
+                        **common,
+                        "transit_name": transit_bare,
+                        "company_name": company_name,
+                        "container_number": num,
+                        "container_size": c.size,
+                        "container_marque": f"01TC{c.size}",  # always 01TC{size}
+                    }
+                    # AKKON -> dedicated template with the BL number placeholder.
+                    if is_akkon:
+                        mise_ctx["BL_nb"] = bl_number
                     zf.writestr(
                         name,
-                        render_to_bytes(TPL_MISE, {
-                            **common,
-                            "transit_name": transit_bare,
-                            "company_name": company_name,
-                            "container_number": num,
-                            "container_size": c.size,
-                            "container_marque": f"01TC{c.size}",  # always 01TC{size}
-                        }),
+                        render_to_bytes(
+                            TPL_MISE_AKKON if is_akkon else TPL_MISE, mise_ctx
+                        ),
                     )
 
             # PART 2 — DCP (تصريح باستيراد المنتوج), values kept as typed

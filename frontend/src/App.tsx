@@ -45,6 +45,7 @@ type GeneratePayload = {
   transit_name: string;
   client_name: string;
   company_name: string;
+  bl_number: string; // AKKON only — printed on every AKKON Mise à Quai
   marchandise_type: string;
   weight_of_all_containers: string;
   force_uppercase: boolean;
@@ -248,6 +249,7 @@ type FormState = {
   client_name: string;
   company_choice: string; // "" | one of COMPANIES | "OTHER"
   company_custom: string; // free text when company_choice === "OTHER"
+  bl_number: string; // shown + used only when the resolved company is AKKON
   marchandise_type: string;
   weight_of_all_containers: string;
   force_uppercase: boolean;
@@ -262,6 +264,7 @@ const initialForm: FormState = {
   client_name: "",
   company_choice: "",
   company_custom: "",
+  bl_number: "",
   marchandise_type: "",
   weight_of_all_containers: "",
   force_uppercase: true,
@@ -503,6 +506,7 @@ function App() {
         : "",
       company_custom:
         savedCompany && !COMPANIES.includes(savedCompany) ? savedCompany : "",
+      bl_number: p.bl_number ?? "",
       marchandise_type: p.marchandise_type ?? "",
       weight_of_all_containers: p.weight_of_all_containers ?? "",
       force_uppercase: p.force_uppercase ?? true,
@@ -550,6 +554,7 @@ function App() {
       transit_name: form.transit_name.trim(),
       client_name: form.client_name.trim(),
       company_name: companyName,
+      bl_number: companyName === "AKKON" ? form.bl_number.trim() : "",
       marchandise_type: form.marchandise_type.trim(),
       weight_of_all_containers: form.weight_of_all_containers.trim(),
       force_uppercase: form.force_uppercase,
@@ -911,6 +916,28 @@ function App() {
                       />
                     )}
                   </div>
+
+                  {/* BL number — only for AKKON; printed on every AKKON Mise à Quai */}
+                  {companyName === "AKKON" && (
+                    <div className="mt-3">
+                      <label className="text-sm font-medium text-slate-300">
+                        BL number
+                        <span className="text-xs text-slate-500 font-normal">
+                          {" "}— optional, printed on every AKKON Mise à Quai
+                        </span>
+                      </label>
+                      <input
+                        className="input mt-2 !w-64 max-w-full block"
+                        type="text"
+                        value={form.bl_number}
+                        onChange={(e) =>
+                          setForm((prev) => ({ ...prev, bl_number: e.target.value }))
+                        }
+                        placeholder="BL NUMBER"
+                        style={{ textTransform: "uppercase" }}
+                      />
+                    </div>
+                  )}
                 </div>
 
                 {/* Live summary */}

@@ -203,8 +203,11 @@ def generate(req: GenerateRequest) -> StreamingResponse:
         bl_number = bl_number.upper()
         marchandise = marchandise.upper()
 
-    # AKKON gets a dedicated Mise à Quai template that also prints the BL number.
-    is_akkon = company_name.strip().upper() == "AKKON"
+    # AKKON gets a dedicated Mise à Quai template that also prints the BL number,
+    # but only when a BL number was actually entered. If AKKON is chosen without a
+    # BL number, fall back to the default template so the document does not show an
+    # empty "BL number:" line.
+    use_akkon_template = company_name.strip().upper() == "AKKON" and bool(bl_number)
 
     transit_bare = transit_base                                   # BON / MISE
     transit_lettre = f"TRANSIT {transit_base}".strip() if transit_base else "TRANSIT"
@@ -303,13 +306,13 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                         "container_size": c.size,
                         "container_marque": f"01TC{c.size}",  # always 01TC{size}
                     }
-                    # AKKON -> dedicated template with the BL number placeholder.
-                    if is_akkon:
+                    # AKKON + a BL number -> dedicated template with the BL line.
+                    if use_akkon_template:
                         mise_ctx["BL_nb"] = bl_number
                     zf.writestr(
                         name,
                         render_to_bytes(
-                            TPL_MISE_AKKON if is_akkon else TPL_MISE, mise_ctx
+                            TPL_MISE_AKKON if use_akkon_template else TPL_MISE, mise_ctx
                         ),
                     )
 

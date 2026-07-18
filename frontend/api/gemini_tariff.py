@@ -29,7 +29,7 @@ except ImportError:            # local execution from inside api/
     from tariff_search import get_index
 
 CACHE_TTL = 30 * 24 * 3600     # 30 days
-CACHE_VER = "v1"
+CACHE_VER = "v2"          # bump to invalidate previously cached results
 
 
 def _log(msg: str) -> None:
@@ -235,8 +235,10 @@ def classify_invoice(image_bytes: bytes, mime_type: str, mode: str) -> dict:
                 pass
         if cached:
             try:
-                results[i] = json.loads(cached)
-                continue
+                parsed = json.loads(cached)
+                if parsed.get("codeHS"):          # never trust cached empties
+                    results[i] = parsed
+                    continue
             except json.JSONDecodeError:
                 pass
         to_classify.append(i)
@@ -306,7 +308,7 @@ def classify_invoice(image_bytes: bytes, mime_type: str, mode: str) -> dict:
                 "candidates": alts,
             }
             results[i] = result
-            if redis_client:
+            if redis_client and result["codeHS"]:  # only cache non-empty results
                 try:
                     key = f"tariff_cls:{CACHE_VER}:{_norm_key(extracted[i]['product'] + ' ' + extracted[i].get('designation_fr', ''))}"
                     redis_client.set(key, json.dumps(result, ensure_ascii=False), ex=CACHE_TTL)

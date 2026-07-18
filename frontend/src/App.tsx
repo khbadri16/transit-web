@@ -20,6 +20,11 @@ import {
   Table,
   Trash2,
   X,
+  Upload,
+  Sparkles,
+  RotateCcw,
+  Zap,
+  Brain,
 } from "lucide-react";
 
 /* --------------------------------------------------------------------------
@@ -293,6 +298,13 @@ function App() {
   const [mobilePaperOpen, setMobilePaperOpen] = useState(false);
   const dcpInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
+  /* AI tariff classification */
+  const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
+  const [invoicePreview, setInvoicePreview] = useState<string | null>(null);
+  const [classifyMode, setClassifyMode] = useState<"pro" | "normal">("pro");
+  const [isClassifying, setIsClassifying] = useState(false);
+  const [classifyError, setClassifyError] = useState<string | null>(null);
+
   const counts = useMemo(() => {
     const c = { "20": 0, "40": 0, "45": 0 } as Record<Size, number>;
     for (const ct of form.containers) c[ct.size]++;
@@ -474,11 +486,119 @@ function App() {
     }));
   };
 
+  /* --- AI tariff classification ------------------------------------------------ */
+
+  const handleInvoiceSelect = (file: File | null) => {
+    setClassifyError(null);
+    if (!file) {
+      setInvoiceFile(null);
+      setInvoicePreview(null);
+      return;
+    }
+    // Validate type
+    const allowed = ["image/jpeg", "image/png", "image/webp"];
+    if (!allowed.includes(file.type)) {
+      setClassifyError("صيغة غير مدعومة. الصيغ المقبولة: JPEG, PNG, WebP");
+      return;
+    }
+    // Validate size (10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      setClassifyError("حجم الملف يتجاوز 10MB");
+      return;
+    }
+    setInvoiceFile(file);
+    // Create preview URL
+    const url = URL.createObjectURL(file);
+    setInvoicePreview(url);
+  };
+
+  const handleInvoiceDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const file = e.dataTransfer.files?.[0];
+    if (file) handleInvoiceSelect(file);
+  };
+
+  const removeInvoice = () => {
+    if (invoicePreview) URL.revokeObjectURL(invoicePreview);
+    setInvoiceFile(null);
+    setInvoicePreview(null);
+    setClassifyError(null);
+  };
+
+  const classifyInvoice = async () => {
+    if (!invoiceFile || isClassifying) return;
+    setIsClassifying(true);
+    setClassifyError(null);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 65000); // 65s client timeout
+
+    try {
+      const formData = new FormData();
+      formData.append("invoice", invoiceFile);
+      formData.append("mode", classifyMode);
+
+      const res = await fetch(`${API_URL}/api/classify-tariff`, {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        let message = `خطأ في الخادم (HTTP ${res.status})`;
+        try {
+          const data = await res.json();
+          if (data?.detail) {
+            message = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+          }
+        } catch { /* non-JSON error body */ }
+        throw new Error(message);
+      }
+
+      const data = await res.json();
+      const products: DcpProduit[] = (data.products || []).map(
+        (p: { product?: string; codeHS?: string }) => ({
+          id: crypto.randomUUID(),
+          produit: (p.product || "").trim(),
+          code: (p.codeHS || "").trim(),
+        })
+      );
+
+      if (products.length === 0) {
+        throw new Error("لم يتم استخراج أي منتوج من الفاتورة. تأكد من وضوح الصورة.");
+      }
+
+      // Replace existing products with AI results
+      setForm((prev) => ({ ...prev, dcp_produits: products }));
+      flash(`تم استخراج ${products.length} منتوج بنجاح.`, "success");
+    } catch (err) {
+      const message =
+        err instanceof DOMException && err.name === "AbortError"
+          ? "انتهت مهلة الطلب (60 ثانية). حاول مرة أخرى."
+          : err instanceof TypeError
+            ? "تعذر الاتصال بالخادم. تأكد من تشغيل الخادم المحلي."
+            : err instanceof Error
+              ? err.message
+              : "حدث خطأ غير متوقع.";
+      setClassifyError(message);
+      flash("فشل تصنيف الفاتورة.", "error");
+    } finally {
+      clearTimeout(timeout);
+      setIsClassifying(false);
+    }
+  };
+
   const clearForm = () => {
     setForm({ ...initialForm, dcp: { ...initialDcp }, dcp_produits: [] });
     setError(null);
     setKbField(null);
+    // AI state
+    removeInvoice();
+    setClassifyError(null);
+    setIsClassifying(false);
   };
+
 
   /* --- history --------------------------------------------------------------- */
 
@@ -1107,6 +1227,109 @@ function App() {
                 <p className="text-xs text-slate-400 mb-4">
                   جدول Produit / Code HS — يُنشأ كملف مستقل عند إضافة منتوجات.
                 </p>
+
+                {/* AI Invoice Classification */}
+                <div className="mb-5 p-4 rounded-xl border border-dashed border-slate-700 bg-slate-900/30">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Sparkles size={16} className="text-amber-400" />
+                    <span className="text-sm font-semibold text-white">تصنيف تلقائي بالذكاء الاصطناعي</span>
+                  </div>
+
+                  {!invoiceFile ? (
+                    <div
+                      className="invoice-upload-zone"
+                      onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("invoice-upload-zone-active"); }}
+                      onDragLeave={(e) => { e.currentTarget.classList.remove("invoice-upload-zone-active"); }}
+                      onDrop={(e) => { e.currentTarget.classList.remove("invoice-upload-zone-active"); handleInvoiceDrop(e); }}
+                      onClick={() => document.getElementById("invoice-file-input")?.click()}
+                    >
+                      <Upload size={28} className="text-slate-500 mx-auto mb-2" />
+                      <p className="text-sm text-slate-400 text-center">
+                        اسحب صورة الفاتورة هنا أو <span className="text-indigo-400 font-medium">تصفح</span>
+                      </p>
+                      <p className="text-xs text-slate-600 text-center mt-1">JPEG, PNG, WebP — حد أقصى 10MB</p>
+                      <input
+                        id="invoice-file-input"
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        className="hidden"
+                        onChange={(e) => handleInvoiceSelect(e.target.files?.[0] || null)}
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-800/60 border border-slate-700">
+                      {invoicePreview && (
+                        <img
+                          src={invoicePreview}
+                          alt="Invoice preview"
+                          className="w-14 h-14 object-cover rounded-lg border border-slate-600"
+                        />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-white font-medium truncate">{invoiceFile.name}</p>
+                        <p className="text-xs text-slate-500">{(invoiceFile.size / 1024).toFixed(0)} KB</p>
+                      </div>
+                      <button
+                        onClick={removeInvoice}
+                        className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-400/10 transition-colors"
+                        title="إزالة"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Mode toggle + Start button */}
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mt-3">
+                    <div className="seg">
+                      <button
+                        type="button"
+                        className={`seg-btn ${classifyMode === "pro" ? "seg-active seg-active-violet" : ""}`}
+                        onClick={() => setClassifyMode("pro")}
+                      >
+                        <Brain size={13} className="inline -mt-px ml-1" /> Pro
+                      </button>
+                      <button
+                        type="button"
+                        className={`seg-btn ${classifyMode === "normal" ? "seg-active seg-active-sky" : ""}`}
+                        onClick={() => setClassifyMode("normal")}
+                      >
+                        <Zap size={13} className="inline -mt-px ml-1" /> سريع
+                      </button>
+                    </div>
+                    <button
+                      onClick={classifyInvoice}
+                      disabled={!invoiceFile || isClassifying}
+                      className="btn-primary flex-1 sm:flex-none !py-2 !px-5 !text-sm"
+                    >
+                      {isClassifying ? (
+                        <>
+                          <Loader2 size={16} className="animate-spin" />
+                          <span>جاري التحليل… قد يستغرق حتى 60 ثانية</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles size={16} />
+                          <span>بدء التصنيف</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {/* Classification error */}
+                  {classifyError && (
+                    <div className="mt-3 flex items-start gap-2 p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm">
+                      <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                      <span className="flex-1">{classifyError}</span>
+                      <button
+                        onClick={classifyInvoice}
+                        className="shrink-0 inline-flex items-center gap-1 text-xs font-medium text-rose-200 hover:text-white transition-colors"
+                      >
+                        <RotateCcw size={12} /> إعادة
+                      </button>
+                    </div>
+                  )}
+                </div>
 
                 {form.dcp_produits.length === 0 ? (
                   <button

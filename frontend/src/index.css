@@ -540,6 +540,31 @@ body {
 }
 
 
+/* ==========================================================================
+   AI Invoice Classification — upload zone + progress
+   ========================================================================== */
+
+.invoice-upload-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem 1rem;
+  border-radius: 0.75rem;
+  border: 2px dashed rgba(148, 163, 184, 0.2);
+  background: rgba(13, 17, 27, 0.5);
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+.invoice-upload-zone:hover {
+  border-color: rgba(99, 102, 241, 0.5);
+  background: rgba(99, 102, 241, 0.06);
+}
+.invoice-upload-zone-active {
+  border-color: rgba(99, 102, 241, 0.7) !important;
+  background: rgba(99, 102, 241, 0.12) !important;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 9px;

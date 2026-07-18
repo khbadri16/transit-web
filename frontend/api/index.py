@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Dict, List, Literal
 
 from docxtpl import DocxTemplate
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -369,3 +369,40 @@ def generate(req: GenerateRequest) -> StreamingResponse:
             "Content-Disposition": f'attachment; filename="documents_{stamp}.zip"',
         },
     )
+
+
+@app.post("/api/classify-tariff")
+async def classify_tariff(
+    invoice: UploadFile = File(...),
+    mode: str = Form("pro"),
+):
+    """Extract products + HS codes from an invoice image using Gemini AI."""
+
+    # --- validation --------------------------------------------------------
+    mime_type = invoice.content_type or "application/octet-stream"
+    allowed = {"image/jpeg", "image/png", "image/webp"}
+    if mime_type not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type ({mime_type}). Allowed: JPEG, PNG, WebP.",
+        )
+
+    image_bytes = await invoice.read()
+    if len(image_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 10 MB).")
+
+    if mode not in ("pro", "normal"):
+        mode = "pro"
+
+    # --- classification ----------------------------------------------------
+    try:
+        from api.gemini_tariff import classify_invoice
+
+        result = classify_invoice(image_bytes, mime_type, mode)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Classification failed: {exc}"
+        )

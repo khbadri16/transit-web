@@ -1394,11 +1394,7 @@ function App() {
                               type="text"
                               dir="ltr"
                               inputMode="numeric"
-                              className={`input font-mono text-sm flex-1 sm:flex-none sm:w-full ${
-                                p.aiConfidence === "low"
-                                  ? "!border-amber-500/70 !ring-1 !ring-amber-500/40"
-                                  : ""
-                              }`}
+                              className="input font-mono text-sm flex-1 sm:flex-none sm:w-full"
                               placeholder="8516329000"
                               value={p.code}
                               onChange={(e) =>
@@ -1423,50 +1419,6 @@ function App() {
                             <Trash2 size={15} />
                           </button>
                         </div>
-                        {p.aiConfidence === "low" && (
-                          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 px-1" dir="rtl">
-                            <span className="text-[11px] text-amber-400/90">
-                              تحقّق من الرمز — اقتراحات:
-                            </span>
-                            {(p.aiCandidates ?? []).map((c) => (
-                              <button
-                                key={c.code}
-                                type="button"
-                                title={c.label}
-                                onClick={() =>
-                                  setForm((prev) => ({
-                                    ...prev,
-                                    dcp_produits: prev.dcp_produits.map((x) =>
-                                      x.id === p.id
-                                        ? { ...x, code: c.code, aiConfidence: "high" }
-                                        : x
-                                    ),
-                                  }))
-                                }
-                                className="font-mono text-[11px] px-2 py-0.5 rounded-md border border-amber-500/40 text-amber-300 hover:bg-amber-500/15 transition-colors"
-                                dir="ltr"
-                              >
-                                {c.code}
-                              </button>
-                            ))}
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setForm((prev) => ({
-                                  ...prev,
-                                  dcp_produits: prev.dcp_produits.map((x) =>
-                                    x.id === p.id
-                                      ? { ...x, aiConfidence: "high" }
-                                      : x
-                                  ),
-                                }))
-                              }
-                              className="text-[11px] px-1.5 py-0.5 rounded-md text-slate-500 hover:text-slate-300 transition-colors"
-                            >
-                              تجاهل
-                            </button>
-                          </div>
-                        )}
                         {kbField === `prod:${p.id}` && (
                           <ArabicKeyboard
                             onKey={kbInsert}

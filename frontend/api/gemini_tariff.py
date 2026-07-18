@@ -125,15 +125,16 @@ def _pick_codes(client, model: str, items):
     prompt = (
         "You are an expert Algerian customs clearance agent.\n"
         "For each item below, choose the single best matching HS code (Code "
-        "Tarifaire) FROM THE ITEM'S CANDIDATE LIST ONLY.\n"
+        "Tarifaire) FROM THE ITEM'S CANDIDATE LIST.\n"
         "Rules:\n"
+        "- You MUST return a codeHS for EVERY item — never leave it empty.\n"
         '- If one candidate clearly matches, return it with confidence "high".\n'
-        "- If several could match or the match is approximate, return the most "
-        'likely one with confidence "low" and list up to 3 plausible '
-        "alternatives from the list in alt_codes.\n"
-        '- If NO candidate fits the product at all, return codeHS "" with '
-        'confidence "low".\n'
-        "- Never invent a code that is not in the candidate list.\n\n"
+        "- If the match is approximate, return the closest candidate (prefer "
+        "the 'Autres' residual subposition of the correct product family) "
+        'with confidence "low".\n'
+        "- Also return hs6: your own classification of the product in the "
+        "universal 6-digit Harmonized System (SH2022), independent of the "
+        "candidate list (digits only, e.g. 851713).\n\n"
         + "\n".join(lines)
     )
     schema = {
@@ -147,9 +148,10 @@ def _pick_codes(client, model: str, items):
                         "i": {"type": "INTEGER"},
                         "codeHS": {"type": "STRING"},
                         "confidence": {"type": "STRING", "enum": ["high", "low"]},
+                        "hs6": {"type": "STRING"},
                         "alt_codes": {"type": "ARRAY", "items": {"type": "STRING"}},
                     },
-                    "required": ["i", "codeHS", "confidence"],
+                    "required": ["i", "codeHS", "confidence", "hs6"],
                 },
             }
         },
@@ -172,11 +174,29 @@ def _pick_codes(client, model: str, items):
             out[r.get("i")] = {
                 "codeHS": (r.get("codeHS") or "").replace(".", ""),
                 "confidence": r.get("confidence", "low"),
+                "hs6": re.sub(r"\D", "", r.get("hs6") or "")[:6],
                 "alt_codes": [a.replace(".", "") for a in (r.get("alt_codes") or [])][:3],
             }
     except json.JSONDecodeError:
         pass
     return out
+
+
+def _residual_of_family(index, prefix: str) -> str:
+    """Best valid national code for a family prefix: prefer the residual
+    'Autres' subposition (what agents default to), else the last child."""
+    for plen in (6, 4):
+        p = prefix[:plen]
+        if len(p) < plen:
+            continue
+        children = [e for e in index.entries if e["code"].startswith(p)]
+        if not children:
+            continue
+        autres = [e for e in children
+                  if "autre" in (e.get("designation") or "").lower()]
+        pick = (autres or children)[-1]
+        return pick["code"]
+    return ""
 
 
 def classify_invoice(image_bytes: bytes, mime_type: str, mode: str) -> dict:
@@ -252,13 +272,29 @@ def classify_invoice(image_bytes: bytes, mime_type: str, mode: str) -> dict:
             else:
                 raise
 
+        valid_codes = {e["code"] for e in index.entries}
         by_code = {c["code"]: c for it in items for c in it["candidates"]}
         for it in items:
             i = it["i"]
-            r = picked.get(i, {"codeHS": "", "confidence": "low", "alt_codes": []})
+            r = picked.get(i, {"codeHS": "", "confidence": "low", "hs6": "", "alt_codes": []})
             cand_codes = {c["code"] for c in it["candidates"]}
-            if r["codeHS"] and r["codeHS"] not in cand_codes:
-                r["confidence"] = "low"        # model went off-list: distrust
+            # ---- guarantee a valid code for every product -----------------
+            if r["codeHS"] not in valid_codes:
+                fallback = ""
+                if r["codeHS"]:
+                    # off-list invention: snap to its family's residual code
+                    fallback = _residual_of_family(index, r["codeHS"])
+                if not fallback and r.get("hs6"):
+                    # model says no candidate fit: trust its universal 6-digit
+                    # family and take that family's residual national code
+                    fallback = _residual_of_family(index, r["hs6"])
+                if not fallback and it["candidates"]:
+                    fallback = it["candidates"][0]["code"]   # best search hit
+                if fallback:
+                    _log(f"item {i}: fallback code {fallback} "
+                         f"(model gave {r['codeHS']!r}, hs6={r.get('hs6')!r})")
+                r["codeHS"] = fallback
+                r["confidence"] = "low"
             alts = [
                 {"code": a, "label": by_code.get(a, {}).get("designation", "")[:80]}
                 for a in r.get("alt_codes", []) if a in cand_codes and a != r["codeHS"]

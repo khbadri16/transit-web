@@ -110,17 +110,33 @@ Rules:
         "required": ["products"]
     }
 
-    response = client.models.generate_content(
-        model=model_name,
-        contents=[prompt, *contents],
-        config=types.GenerateContentConfig(
-            temperature=0.1,
-            response_mime_type="application/json",
-            response_schema=response_schema,
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[prompt, *contents],
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                response_mime_type="application/json",
+                response_schema=response_schema,
+            )
         )
-    )
+    except Exception as exc:
+        msg = str(exc)
+        if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+            label = "Pro" if mode == "pro" else "Normal"
+            raise ValueError(
+                f"تم استنفاد حصة نموذج {label}. حاول لاحقاً أو استخدم الوضع الآخر."
+            )
+        raise
 
     try:
-        return json.loads(response.text)
+        data = json.loads(response.text)
     except json.JSONDecodeError:
         return {"products": []}
+
+    # Strip dots from HS codes (e.g. 8431.49.90.00 -> 8431499000)
+    for p in data.get("products", []):
+        if p.get("codeHS"):
+            p["codeHS"] = p["codeHS"].replace(".", "")
+
+    return data

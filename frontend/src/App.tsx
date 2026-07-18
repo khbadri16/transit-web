@@ -43,6 +43,9 @@ type DcpProduit = {
   id: string;
   produit: string;
   code: string;
+  /** AI classification metadata (not sent to the backend). */
+  aiConfidence?: "high" | "low";
+  aiCandidates?: { code: string; label: string }[];
 };
 
 /** Exactly what is POSTed to the FastAPI backend. */
@@ -532,7 +535,7 @@ function App() {
     setClassifyError(null);
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 65000); // 65s client timeout
+    const timeout = setTimeout(() => controller.abort(), 305000); // just above the 300s server maxDuration
 
     try {
       const formData = new FormData();
@@ -558,10 +561,17 @@ function App() {
 
       const data = await res.json();
       const products: DcpProduit[] = (data.products || []).map(
-        (p: { product?: string; codeHS?: string }) => ({
+        (p: {
+          product?: string;
+          codeHS?: string;
+          confidence?: "high" | "low";
+          candidates?: { code: string; label: string }[];
+        }) => ({
           id: crypto.randomUUID(),
           produit: (p.product || "").trim(),
           code: (p.codeHS || "").trim(),
+          aiConfidence: p.confidence,
+          aiCandidates: p.candidates?.length ? p.candidates : undefined,
         })
       );
 
@@ -575,7 +585,7 @@ function App() {
     } catch (err) {
       const message =
         err instanceof DOMException && err.name === "AbortError"
-          ? "انتهت مهلة الطلب (60 ثانية). حاول مرة أخرى."
+          ? "انتهت مهلة الطلب (5 دقائق). حاول مرة أخرى."
           : err instanceof TypeError
             ? "تعذر الاتصال بالخادم. تأكد من تشغيل الخادم المحلي."
             : err instanceof Error
@@ -1384,7 +1394,11 @@ function App() {
                               type="text"
                               dir="ltr"
                               inputMode="numeric"
-                              className="input font-mono text-sm flex-1 sm:flex-none sm:w-full"
+                              className={`input font-mono text-sm flex-1 sm:flex-none sm:w-full ${
+                                p.aiConfidence === "low"
+                                  ? "!border-amber-500/70 !ring-1 !ring-amber-500/40"
+                                  : ""
+                              }`}
                               placeholder="8516329000"
                               value={p.code}
                               onChange={(e) =>
@@ -1409,6 +1423,50 @@ function App() {
                             <Trash2 size={15} />
                           </button>
                         </div>
+                        {p.aiConfidence === "low" && (
+                          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 px-1" dir="rtl">
+                            <span className="text-[11px] text-amber-400/90">
+                              تحقّق من الرمز — اقتراحات:
+                            </span>
+                            {(p.aiCandidates ?? []).map((c) => (
+                              <button
+                                key={c.code}
+                                type="button"
+                                title={c.label}
+                                onClick={() =>
+                                  setForm((prev) => ({
+                                    ...prev,
+                                    dcp_produits: prev.dcp_produits.map((x) =>
+                                      x.id === p.id
+                                        ? { ...x, code: c.code, aiConfidence: "high" }
+                                        : x
+                                    ),
+                                  }))
+                                }
+                                className="font-mono text-[11px] px-2 py-0.5 rounded-md border border-amber-500/40 text-amber-300 hover:bg-amber-500/15 transition-colors"
+                                dir="ltr"
+                              >
+                                {c.code}
+                              </button>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setForm((prev) => ({
+                                  ...prev,
+                                  dcp_produits: prev.dcp_produits.map((x) =>
+                                    x.id === p.id
+                                      ? { ...x, aiConfidence: "high" }
+                                      : x
+                                  ),
+                                }))
+                              }
+                              className="text-[11px] px-1.5 py-0.5 rounded-md text-slate-500 hover:text-slate-300 transition-colors"
+                            >
+                              تجاهل
+                            </button>
+                          </div>
+                        )}
                         {kbField === `prod:${p.id}` && (
                           <ArabicKeyboard
                             onKey={kbInsert}

@@ -4,8 +4,8 @@
   ],
   "functions": {
     "api/index.py": {
-      "includeFiles": "api/{templates,tariff-docs}/**",
-      "maxDuration": 60
+      "includeFiles": "api/**",
+      "maxDuration": 300
     }
   }
 }

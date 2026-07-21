@@ -83,9 +83,11 @@ def _vis(text: str, rtl: bool = True) -> str:
 
 
 def _value_vis(value: str) -> str:
-    """A typed value, kept exactly as typed: Arabic-first values flow RTL,
-    Latin/digit-first values flow LTR."""
-    rtl = bool(_AR_RE.match(value.lstrip()[:1] or ""))
+    """A typed value, kept exactly as typed. Anything containing Arabic flows
+    right-to-left — so "2339 طرد" reads number first, unit after (طرد ends up
+    on the right of the digits). Pure Latin/digit values (dates, amounts,
+    BL numbers) flow left-to-right."""
+    rtl = bool(_AR_RE.search(value))
     return _vis(value, rtl=rtl)
 
 

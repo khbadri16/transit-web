@@ -274,6 +274,30 @@ def build_dcp_pdf(fields: Dict[str, str],
              "المادة3 من المرسوم التنفيذي رقم05-467مؤرخ في8دي القعدة عام1426الموافق10 ديسمبر في2005")
 
     # ---------------- body ----------------
+    # long addresses wrap onto a second line instead of leaving the paper
+    d.form_size()
+    addr_label_w = d.w(_vis("(2)العنوان: "))
+    addr_budget = (X_FORM - addr_label_w) - X_LEFT
+    addr = f.get("العنوان", "")
+    addr_lines = [addr]
+    d.value_size()
+    if addr and d.w(_value_vis(addr)) + VALUE_BOLDEN > addr_budget:
+        words = addr.split()
+        first: List[str] = []
+        while words:
+            trial = " ".join(first + [words[0]])
+            if first and d.w(_value_vis(trial)) + VALUE_BOLDEN > addr_budget:
+                break
+            first.append(words.pop(0))
+        addr_lines = [" ".join(first), " ".join(words)]
+    d.form_size()
+    # a wrapped address gets its own breathing room: everything from line
+    # (3)تعيين downwards moves down so the continuation is not squeezed
+    y_shift = 14 if len(addr_lines) > 1 and addr_lines[1] else 0
+
+    def _y(y: float) -> float:
+        return y + y_shift if y >= 340 else y
+
     # instruction column (right) — each line shrinks alone if it would ever
     # cross into the form column, so the two columns always stay separated
     INSTRUCTIONS = [
@@ -304,25 +328,7 @@ def build_dcp_pdf(fields: Dict[str, str],
         if w > ins_budget:
             d.size(INS_PT * ins_budget / w)
             w = d.w(v)
-        d.text(X_RIGHT - w, y, v)
-
-    # long addresses wrap onto a second line instead of leaving the paper
-    d.form_size()
-    addr_label_w = d.w(_vis("(2)العنوان: "))
-    addr_budget = (X_FORM - addr_label_w) - X_LEFT
-    addr = f.get("العنوان", "")
-    addr_lines = [addr]
-    d.value_size()
-    if addr and d.w(_value_vis(addr)) + VALUE_BOLDEN > addr_budget:
-        words = addr.split()
-        first: List[str] = []
-        while words:
-            trial = " ".join(first + [words[0]])
-            if first and d.w(_value_vis(trial)) + VALUE_BOLDEN > addr_budget:
-                break
-            first.append(words.pop(0))
-        addr_lines = [" ".join(first), " ".join(words)]
-    d.form_size()
+        d.text(X_RIGHT - w, _y(y), v)
 
     # form column — measured first, then drawn once at one uniform size that
     # keeps every row inside the page (long values shrink the whole column
@@ -359,9 +365,11 @@ def build_dcp_pdf(fields: Dict[str, str],
         (718, [("t", "(16) العبور : "), ("v", "مباشر", 0), ("g", 24),
                ("t", "(16)الوصول: "), ("v", "عنابة", 0)], X_FORM),
     ]
-    if len(addr_lines) > 1 and addr_lines[1]:
-        # continuation of a long address, under the value area of line (2)
-        ROWS.insert(3, (328, [("v", addr_lines[1], 0)], X_FORM - addr_label_w))
+    if y_shift:
+        # continuation of a long address: a touch lower than line (2) and
+        # inset from the right so it stands clear of both lines
+        ROWS.insert(3, (332, [("v", addr_lines[1], 0)],
+                        X_FORM - addr_label_w - 10))
 
     # one uniform size for the whole column; iterate because entered data
     # keeps a fixed size bonus over the shrinking body size
@@ -377,7 +385,7 @@ def build_dcp_pdf(fields: Dict[str, str],
             break
         d.body_pt = max(d.body_pt * shrink, 9.0)
     for y, tokens, x_start in ROWS:
-        _draw_row(d, y, tokens, x_start)
+        _draw_row(d, _y(y), tokens, x_start)
 
     # ---------------- footer ----------------
     d.size(11)

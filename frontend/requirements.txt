@@ -2,6 +2,7 @@
 # Vercel installs these automatically; locally: pip install -r requirements.txt
 fastapi==0.115.14
 docxtpl==0.20.1
+Pillow>=10.0.0
 python-multipart==0.0.20
 google-genai>=1.14.0
 upstash-redis>=1.1.0

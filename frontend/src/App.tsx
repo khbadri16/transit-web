@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { Fragment, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -58,6 +58,11 @@ type GeneratePayload = {
   weight_of_all_containers: string;
   force_uppercase: boolean;
   containers: { number: string; size: Size }[];
+  /* Which transit documents to generate */
+  doc_mise: boolean;
+  doc_lettre: boolean;
+  doc_bon: boolean;
+  doc_merge: boolean; // one Word file: Mise ×2 each + Lettre ×2 + Bon
   dcp_enabled: boolean;
   dcp: Record<string, string>;
   dcp_produits: { produit: string; code: string }[];
@@ -136,7 +141,8 @@ type DcpFieldDef = {
   label: string;
   /** Item number printed on the paper, e.g. (1) */
   num?: string;
-  type: "text" | "date";
+  /** "rc" = registre de commerce composite (nn/nn-nnnnnnn + letter + nn) */
+  type: "text" | "date" | "rc";
   placeholder?: string;
   /** Static unit shipped with the value (e.g. DA, طن) */
   suffix?: string;
@@ -150,7 +156,7 @@ type DcpFieldDef = {
 const DCP_ROWS: DcpFieldDef[][] = [
   [{ key: "المستورد", num: "1", label: "المستورد", type: "text", placeholder: "اللقب والاسم أو شركة المتعامل" }],
   [
-    { key: "رقم_س_ت", label: "رقم السجل التجاري (س ت)", type: "text" },
+    { key: "رقم_س_ت", label: "رقم السجل التجاري (س ت)", type: "rc" },
     { key: "تاريخ_الاستراد", label: "تاريخ س ت", type: "date" },
   ],
   [{ key: "العنوان", num: "2", label: "العنوان", type: "text", placeholder: "العنوان الحقيقي للمتعامل" }],
@@ -161,7 +167,7 @@ const DCP_ROWS: DcpFieldDef[][] = [
   ],
   [{ key: "الكمية", num: "6", label: "الكمية", type: "text", placeholder: "الكمية بالأطنان", suffix: "طن", suffixEnd: true }],
   [
-    { key: "فاتورة_الشراء", num: "8", label: "فاتورة الشراء", type: "text" },
+    { key: "فاتورة_الشراء", num: "8", label: "رقم فاتورة الشراء", type: "text" },
     { key: "القيمة", num: "9", label: "القيمة", type: "text", currency: true },
   ],
   [
@@ -170,22 +176,39 @@ const DCP_ROWS: DcpFieldDef[][] = [
   ],
   [{ key: "الصانع", num: "10", label: "الصانع", type: "text" }],
   [{ key: "مكان_المصدر", num: "11", label: "مكان المصدر", type: "text" }],
-  [{ key: "مرجع_النقل", num: "14", label: "مرجع النقل", type: "text" }],
-  [{ key: "وثائق_النقل", num: "15", label: "وثائق النقل", type: "text" }],
+  /* The placeholder in DCP.docx stays مرجع_النقل — only the label changed. */
+  [{ key: "مرجع_النقل", num: "14", label: "شركة النقل", type: "text" }],
+  [{ key: "وثائق_النقل", num: "15", label: "رقم ال BL", type: "text" }],
   [
     { key: "الانطلاق_من", num: "16", label: "الانطلاق من", type: "text" },
     { key: "تاريخ_الانطلاق", label: "تاريخ الانطلاق", type: "date" },
   ],
-  [
-    { key: "العبور", num: "16", label: "العبور", type: "text" },
-    { key: "الوصول", num: "16", label: "الوصول", type: "text" },
-  ],
+  /* العبور / الوصول are now static text inside DCP.docx — no form fields. */
 ];
 
 const DCP_ALL_FIELDS = DCP_ROWS.flat();
 
+/* رقم السجل التجاري — fixed format, entered left-to-right:
+ *   nn / nn - nnnnnnn [arabic letter] nn      e.g. 19/00-1163066ب23
+ * Stored as 5 separate dcp keys. The document renders it as an inline image
+ * (drawn left-to-right, immune to bidi); the preview uses isolated spans. */
+const RC_PARTS = [
+  { key: "رقم_س_ت_1", max: 2, ph: "19", w: "w-14" },
+  { key: "رقم_س_ت_2", max: 2, ph: "00", w: "w-14" },
+  { key: "رقم_س_ت_3", max: 7, ph: "1163066", w: "w-24" },
+  { key: "رقم_س_ت_حرف", max: 1, ph: "ب", w: "w-11" },
+  { key: "رقم_س_ت_4", max: 2, ph: "23", w: "w-14" },
+] as const;
+const RC_LETTER_KEY = "رقم_س_ت_حرف";
+
+/** The 5 س ت parts, trimmed, in typing order ("" placeholders when empty). */
+const rcParts = (dcp: Record<string, string>) =>
+  RC_PARTS.map((p) => (dcp[p.key] ?? "").trim());
+
 const initialDcp: Record<string, string> = {
   ...Object.fromEntries(DCP_ALL_FIELDS.map((f) => [f.key, ""])),
+  ...Object.fromEntries(RC_PARTS.map((p) => [p.key, ""])),
+  [RC_LETTER_KEY]: "ب", // most common letter — editable
   القيمة_عملة: "EUR",
   القيمة_عملة_نص: "",
 };
@@ -262,6 +285,10 @@ type FormState = {
   weight_of_all_containers: string;
   force_uppercase: boolean;
   containers: Container[];
+  doc_mise: boolean;
+  doc_lettre: boolean;
+  doc_bon: boolean;
+  doc_merge: boolean;
   dcp_enabled: boolean;
   dcp: Record<string, string>;
   dcp_produits: DcpProduit[];
@@ -277,6 +304,10 @@ const initialForm: FormState = {
   weight_of_all_containers: "",
   force_uppercase: true,
   containers: [],
+  doc_mise: true,
+  doc_lettre: true,
+  doc_bon: true,
+  doc_merge: false,
   dcp_enabled: false,
   dcp: { ...initialDcp },
   dcp_produits: [],
@@ -320,19 +351,31 @@ function App() {
     form.company_choice === "OTHER" ? form.company_custom.trim() : form.company_choice
   ).toUpperCase();
 
-  const transitReady =
+  /** At least one transit document type must be selected. */
+  const anyDocSelected =
+    form.doc_mise || form.doc_lettre || form.doc_bon || form.doc_merge;
+
+  const transitFieldsReady =
     form.transit_name.trim() !== "" &&
     form.client_name.trim() !== "" &&
     companyName !== "" &&
     form.containers.length > 0 &&
     form.containers.every((c) => c.number.trim() !== "");
+  const transitReady = transitFieldsReady && anyDocSelected;
   const dcpReady = form.dcp_enabled;
   const annexReady = form.dcp_produits.some(
     (p) => p.produit.trim() !== "" || p.code.trim() !== ""
   );
   const canGenerate = transitReady || dcpReady || annexReady;
   const docCount =
-    (transitReady ? counts.total + 2 : 0) + (dcpReady ? 1 : 0) + (annexReady ? 1 : 0);
+    (transitReady
+      ? (form.doc_mise ? counts.total : 0) +
+        (form.doc_lettre ? 1 : 0) +
+        (form.doc_bon ? 1 : 0) +
+        (form.doc_merge ? 1 : 0)
+      : 0) +
+    (dcpReady ? 1 : 0) +
+    (annexReady ? 1 : 0);
 
   /** The live DCP paper: available on large screens while DCP is enabled. */
   const paperAvailable = form.dcp_enabled;
@@ -410,6 +453,9 @@ function App() {
   const setKbValue = (key: string, value: string) => {
     if (key.startsWith("prod:")) {
       updateProduit(key.slice(5), "produit", value);
+    } else if (key === RC_LETTER_KEY) {
+      // the س ت letter box holds exactly one Arabic letter
+      updateDcp(key, value.replace(/[\d\s]/g, "").slice(-1));
     } else {
       updateDcp(key, value);
     }
@@ -645,6 +691,10 @@ function App() {
         number: c.number,
         size: c.size,
       })),
+      doc_mise: p.doc_mise ?? true,
+      doc_lettre: p.doc_lettre ?? true,
+      doc_bon: p.doc_bon ?? true,
+      doc_merge: p.doc_merge ?? false,
       dcp_enabled: p.dcp_enabled ?? false,
       dcp: { ...initialDcp, ...(p.dcp ?? {}) },
       dcp_produits: (p.dcp_produits ?? []).map((pr) => ({
@@ -692,6 +742,10 @@ function App() {
         number: c.number.trim(),
         size: c.size,
       })),
+      doc_mise: form.doc_mise,
+      doc_lettre: form.doc_lettre,
+      doc_bon: form.doc_bon,
+      doc_merge: form.doc_merge,
       dcp_enabled: form.dcp_enabled,
       dcp: { ...form.dcp },
       dcp_produits: form.dcp_produits.map((p) => ({
@@ -1146,6 +1200,75 @@ function App() {
                     ))}
                   </div>
                 )}
+
+                {/* Documents to generate — selection drives the ZIP content */}
+                <div className="mt-6 pt-5 border-t border-slate-800">
+                  <h3 className="text-sm font-semibold text-slate-300 mb-1 flex items-center gap-2">
+                    <FileText size={15} className="text-indigo-400" />
+                    Documents to generate
+                  </h3>
+                  <p className="text-xs text-slate-500 mb-3">
+                    Lettre d'Engagement is always ×2 copies, and each Mise à Quai
+                    ×2 copies (second page in the same file).
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {(
+                      [
+                        {
+                          key: "doc_mise",
+                          label: "MISE A QUAI L",
+                          hint: "one file per container — ×2 copies each",
+                        },
+                        {
+                          key: "doc_lettre",
+                          label: "LETTRE D'ENGAGEMENT",
+                          hint: "×2 copies",
+                        },
+                        {
+                          key: "doc_bon",
+                          label: "BON DE COMMANDE",
+                          hint: "1 copy",
+                        },
+                        {
+                          key: "doc_merge",
+                          label: "Merge everything",
+                          hint: "one Word file: Mise ×2 + Lettre ×2 + Bon",
+                        },
+                      ] as const
+                    ).map((opt) => (
+                      <label
+                        key={opt.key}
+                        className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer select-none transition-colors ${
+                          form[opt.key]
+                            ? "bg-indigo-500/10 border-indigo-500/50"
+                            : "bg-slate-900/50 border-slate-700/70 hover:border-indigo-500/40"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          name={opt.key}
+                          checked={form[opt.key]}
+                          onChange={handleInputChange}
+                          className="mt-0.5 w-4 h-4 shrink-0 accent-indigo-500"
+                        />
+                        <span className="min-w-0">
+                          <span className="block text-sm font-semibold text-slate-200">
+                            {opt.label}
+                          </span>
+                          <span className="block text-[11px] text-slate-500">
+                            {opt.hint}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  {transitFieldsReady && !anyDocSelected && (
+                    <p className="mt-3 flex items-center gap-1.5 text-xs text-amber-300">
+                      <AlertTriangle size={13} className="shrink-0" />
+                      Select at least one document to generate.
+                    </p>
+                  )}
+                </div>
               </section>
 
               {/* DCP — تصريح باستيراد منتوج */}
@@ -1179,7 +1302,9 @@ function App() {
                   <div className="dcp-form mt-6 space-y-4">
                     {DCP_ROWS.map((row, ri) => {
                       const kbInRow = row.some(
-                        (f) => f.key === kbField && f.type === "text"
+                        (f) =>
+                          (f.key === kbField && f.type === "text") ||
+                          (f.type === "rc" && kbField === RC_LETTER_KEY)
                       );
                       return (
                         <div key={ri}>
@@ -1190,21 +1315,36 @@ function App() {
                                 : "grid-cols-1"
                             }`}
                           >
-                            {row.map((f) => (
-                              <DcpField
-                                key={f.key}
-                                def={f}
-                                value={form.dcp[f.key] ?? ""}
-                                dcp={form.dcp}
-                                kbOpen={kbField === f.key}
-                                onChange={updateDcp}
-                                onToggleKb={() => toggleKb(f.key)}
-                                onEscape={() => setKbField(null)}
-                                setRef={(el) => {
-                                  dcpInputRefs.current[f.key] = el;
-                                }}
-                              />
-                            ))}
+                            {row.map((f) =>
+                              f.type === "rc" ? (
+                                <RcField
+                                  key={f.key}
+                                  def={f}
+                                  dcp={form.dcp}
+                                  kbOpen={kbField === RC_LETTER_KEY}
+                                  onChange={updateDcp}
+                                  onToggleKb={() => toggleKb(RC_LETTER_KEY)}
+                                  onEscape={() => setKbField(null)}
+                                  setLetterRef={(el) => {
+                                    dcpInputRefs.current[RC_LETTER_KEY] = el;
+                                  }}
+                                />
+                              ) : (
+                                <DcpField
+                                  key={f.key}
+                                  def={f}
+                                  value={form.dcp[f.key] ?? ""}
+                                  dcp={form.dcp}
+                                  kbOpen={kbField === f.key}
+                                  onChange={updateDcp}
+                                  onToggleKb={() => toggleKb(f.key)}
+                                  onEscape={() => setKbField(null)}
+                                  setRef={(el) => {
+                                    dcpInputRefs.current[f.key] = el;
+                                  }}
+                                />
+                              )
+                            )}
                           </div>
                           {kbInRow && (
                             <ArabicKeyboard
@@ -1439,16 +1579,29 @@ function App() {
               {!canGenerate ? (
                 <p className="text-xs text-slate-500 mb-3">
                   Every part is optional — complete any one of them to generate: transit
-                  documents (names + shipping company + containers), the DCP declaration,
-                  or the tariff annex.
+                  documents (names + shipping company + containers + at least one
+                  document type), the DCP declaration, or the tariff annex.
                 </p>
               ) : (
                 <p className="text-xs text-slate-400 mb-3 flex flex-wrap items-center gap-x-1.5 gap-y-1">
                   {transitReady && (
                     <>
-                      <span className="doc-pill">1 × Bon de Commande</span>
-                      <span className="doc-pill">1 × Lettre d'Engagement</span>
-                      <span className="doc-pill">{counts.total} × Mise à Quai</span>
+                      {form.doc_bon && (
+                        <span className="doc-pill">1 × Bon de Commande</span>
+                      )}
+                      {form.doc_lettre && (
+                        <span className="doc-pill">1 × Lettre d'Engagement (×2)</span>
+                      )}
+                      {form.doc_mise && (
+                        <span className="doc-pill">
+                          {counts.total} × Mise à Quai (×2)
+                        </span>
+                      )}
+                      {form.doc_merge && (
+                        <span className="doc-pill">
+                          1 × Merged file (Mise + Lettre + Bon)
+                        </span>
+                      )}
                     </>
                   )}
                   {dcpReady && (
@@ -1777,6 +1930,105 @@ function DcpField({
   );
 }
 
+/* --- رقم السجل التجاري composite field (nn/nn-nnnnnnn + letter + nn) -------- */
+function RcField({
+  def,
+  dcp,
+  kbOpen,
+  onChange,
+  onToggleKb,
+  onEscape,
+  setLetterRef,
+}: {
+  def: DcpFieldDef;
+  dcp: Record<string, string>;
+  kbOpen: boolean;
+  onChange: (key: string, value: string) => void;
+  onToggleKb: () => void;
+  onEscape: () => void;
+  setLetterRef: (el: HTMLInputElement | null) => void;
+}) {
+  const refs = useRef<(HTMLInputElement | null)[]>([]);
+
+  const focusNext = (i: number) => {
+    let j = i + 1;
+    // the letter is usually pre-filled with ب — skip it while typing digits
+    if (RC_PARTS[j]?.key === RC_LETTER_KEY && (dcp[RC_LETTER_KEY] ?? "").trim()) {
+      j += 1;
+    }
+    refs.current[j]?.focus();
+  };
+
+  const handlePart = (i: number, rawVal: string) => {
+    const part = RC_PARTS[i];
+    const v =
+      part.key === RC_LETTER_KEY
+        ? rawVal.replace(/[\d\s]/g, "").slice(-1) // one letter, new one replaces
+        : rawVal.replace(/\D/g, "").slice(0, part.max);
+    onChange(part.key, v);
+    if (part.key !== RC_LETTER_KEY && v.length >= part.max) focusNext(i);
+    if (part.key === RC_LETTER_KEY && v) focusNext(i);
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-sm font-medium text-slate-300">
+        {def.label}
+        <span className="text-xs text-slate-500 font-normal"> — يُكتب من اليسار إلى اليمين</span>
+      </label>
+      {/* left-to-right so the visual order matches the typing order */}
+      <div className="flex flex-wrap items-center gap-1" dir="ltr">
+        {RC_PARTS.map((part, i) => (
+          <Fragment key={part.key}>
+            <input
+              ref={(el) => {
+                refs.current[i] = el;
+                if (part.key === RC_LETTER_KEY) setLetterRef(el);
+              }}
+              type="text"
+              dir={part.key === RC_LETTER_KEY ? "rtl" : "ltr"}
+              inputMode={part.key === RC_LETTER_KEY ? undefined : "numeric"}
+              className={`input ${part.w} flex-none !px-1.5 text-center font-mono text-sm`}
+              value={dcp[part.key] ?? ""}
+              placeholder={part.ph}
+              onChange={(e) => handlePart(i, e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") onEscape();
+                if (
+                  e.key === "Backspace" &&
+                  !(dcp[part.key] ?? "") &&
+                  i > 0
+                ) {
+                  refs.current[i - 1]?.focus();
+                }
+              }}
+              title={part.key === RC_LETTER_KEY ? "الحرف العربي" : undefined}
+            />
+            {i === 0 && <span className="text-slate-400 font-bold select-none">/</span>}
+            {i === 1 && <span className="text-slate-400 font-bold select-none">-</span>}
+          </Fragment>
+        ))}
+        {/* Arabic keyboard for the letter box */}
+        <button
+          type="button"
+          tabIndex={-1}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={onToggleKb}
+          className={`p-1.5 rounded-lg transition-colors ${
+            kbOpen
+              ? "text-indigo-300 bg-indigo-500/15"
+              : "text-slate-500 hover:text-indigo-300 hover:bg-indigo-500/15"
+          }`}
+          title="لوحة مفاتيح عربية (للحرف)"
+          aria-label="لوحة مفاتيح عربية للحرف"
+        >
+          <Keyboard size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* --- Arabic on-screen keyboard --------------------------------------------- */
 function ArabicKeyboard({
   onKey,
@@ -1827,6 +2079,32 @@ function ArabicKeyboard({
   );
 }
 
+/** س ت value in the live paper: direction-isolated segments laid out
+ *  left-to-right — mirrors the inline image of the generated document. */
+function RcValue({ dcp }: { dcp: Record<string, string> }) {
+  const [p1, p2, p3, letter, p4] = rcParts(dcp);
+  if (!(p1 || p2 || p3 || p4)) {
+    const legacy = (dcp["رقم_س_ت"] ?? "").trim();
+    return legacy ? (
+      <span className="dcp-val" dir="auto">
+        {legacy}
+      </span>
+    ) : (
+      <span className="dcp-dots" style={{ minWidth: 40 }} />
+    );
+  }
+  const iso: React.CSSProperties = { unicodeBidi: "isolate", direction: "ltr" };
+  return (
+    <span className="dcp-val" dir="ltr" style={{ unicodeBidi: "isolate" }}>
+      <span style={iso}>
+        {p1}/{p2}-{p3}
+      </span>
+      <span style={iso}>{letter}</span>
+      <span style={iso}>{p4}</span>
+    </span>
+  );
+}
+
 /* --- DCP live paper preview (read-only) ------------------------------------ */
 function DcpPaper({ dcp }: { dcp: Record<string, string> }) {
   const val = (k: string) => (dcp[k] ?? "").trim();
@@ -1861,7 +2139,7 @@ function DcpPaper({ dcp }: { dcp: Record<string, string> }) {
           (1) المستورد: <F v={val("المستورد")} />
         </PaperLine>
         <PaperLine ins="2) العنوان الحقيقي للمتعامل المعني">
-          رقم وتاريخ س ت: <F v={val("رقم_س_ت")} w={40} /> بتاريخ: <F v={date("تاريخ_الاستراد")} w={40} />
+          رقم وتاريخ س ت: <RcValue dcp={dcp} /> بتاريخ: <F v={date("تاريخ_الاستراد")} w={40} />
         </PaperLine>
         <PaperLine ins="3) بيّن الطبيعة الحقيقية للمنتوج">
           (2) العنوان: <F v={val("العنوان")} />
@@ -1886,10 +2164,18 @@ function DcpPaper({ dcp }: { dcp: Record<string, string> }) {
         </PaperLine>
         <PaperLine ins="8) بيّن الرقم والتاريخ">
           بتاريخ: <F v={date("الفاتورة_تاريخ")} w={40} /> <span className="dcp-gap" />{" "}
-          <span className="dcp-unit" dir="ltr">
-            DA
-          </span>{" "}
-          <F v={val("القيمة_بالدينار")} w={45} />
+          {val("القيمة_بالدينار") ? (
+            <span className="dcp-val" dir="ltr">
+              {val("القيمة_بالدينار")} DA
+            </span>
+          ) : (
+            <>
+              <span className="dcp-dots" style={{ minWidth: 45 }} />{" "}
+              <span className="dcp-unit" dir="ltr">
+                DA
+              </span>
+            </>
+          )}
         </PaperLine>
         <PaperLine ins="9) القيمة بالدينار الجزائري">
           (10) الصانع: <F v={val("الصانع")} />
@@ -1904,7 +2190,7 @@ function DcpPaper({ dcp }: { dcp: Record<string, string> }) {
           (13) اشهاد المنتوج: ....شهادة المنشأ.... المراقبات التي تعرض لها المنتوج: شهادة المطابقة....
         </PaperLine>
         <PaperLine ins="13) مرجع الاشهاد المحتمل للمنتوج">
-          (14) مرجع النقل: <F v={val("مرجع_النقل")} />
+          (14) شركة النقل: <F v={val("مرجع_النقل")} />
         </PaperLine>
         <PaperLine ins="14) مرجع وسائل النقل">
           (15) وثائق النقل: <F v={val("وثائق_النقل")} />
@@ -1912,8 +2198,10 @@ function DcpPaper({ dcp }: { dcp: Record<string, string> }) {
         <PaperLine ins="15) مرجع الوثائق المرفقة للمنتوج">
           (16) الانطلاق من: <F v={val("الانطلاق_من")} w={35} /> بتاريخ: <F v={date("تاريخ_الانطلاق")} w={40} />
         </PaperLine>
+        {/* العبور / الوصول are static text in the template — shown as fixed dots */}
         <PaperLine ins="16) بيّن المكان والتاريخ">
-          (16) العبور: <F v={val("العبور")} w={35} /> (16) الوصول: <F v={val("الوصول")} w={35} />
+          (16) العبور: <span className="dcp-dots" style={{ minWidth: 35 }} /> (16)
+          الوصول: <span className="dcp-dots" style={{ minWidth: 35 }} />
         </PaperLine>
       </div>
 

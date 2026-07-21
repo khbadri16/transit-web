@@ -3,14 +3,13 @@
 Single Vercel project: a React SPA plus a FastAPI Python function (`/api/*`)
 that renders the .docx templates with docxtpl and returns them as one ZIP
 download. Three independent parts: transit documents (Bon de Commande, Lettre
-d'Engagement, Mise à Quai per container), the DCP declaration (تصريح باستيراد
+d'Engagement ×2, Mise à Quai ×2 per container — selectable via checkboxes,
+with an optional single merged Word file), the DCP declaration (تصريح باستيراد
 المنتوج) and the tariff annex (ملحق التعريفات الجمركية).
 
 - `frontend/` — Vite + React + TypeScript + Tailwind CSS v4
   - `frontend/api/index.py` — the FastAPI serverless function
   - `frontend/api/templates/` — the .docx templates
-- `backend/` — optional standalone FastAPI server (same API, for non-Vercel hosts)
-- `DEPLOYMENT_GUIDE.md` — GitHub → Vercel instructions
 
 ## Quick start (local)
 

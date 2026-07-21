@@ -1,8 +1,8 @@
 """
 Transit Document Generator — Vercel Python Function
 ---------------------------------------------------
-Same FastAPI application as Web/backend, packaged as a Vercel serverless
-function so the frontend and the API deploy together in ONE Vercel project.
+FastAPI application packaged as a Vercel serverless function so the frontend
+and the API deploy together in ONE Vercel project.
 
 Routes are prefixed with /api because Vercel rewrites /api/* to this file
 (see vercel.json) and the function receives the original request path:
@@ -65,9 +65,76 @@ DCP_FIELDS = [
     "معروض_في", "متكون_من", "الكمية", "فاتورة_الشراء", "القيمة",
     "القيمة_بالدينار", "الفاتورة_تاريخ", "الصانع", "مكان_المصدر",
     "مرجع_النقل", "وثائق_النقل", "الانطلاق_من", "تاريخ_الانطلاق",
-    "العبور", "الوصول",
+    # العبور / الوصول are static text inside DCP.docx now — no longer sent.
 ]
 DCP_DATE_FIELDS = {"تاريخ_الاستراد", "الفاتورة_تاريخ", "تاريخ_الانطلاق"}
+# Fields rendered WITHOUT bidi control marks. Their paragraph in DCP.docx is a
+# left-to-right paragraph ("بتاريخ: {{date}} ... {{value DA}}" line): the RLM
+# guards used elsewhere bridge the two values into one right-to-left stretch
+# and swap them, printing the DA amount next to بتاريخ instead of the date.
+# Plain digits/Latin text in an LTR paragraph always stays in typed order.
+DCP_PLAIN_FIELDS = {"القيمة_بالدينار", "الفاتورة_تاريخ"}
+
+# رقم السجل التجاري (س ت) arrives split into 5 parts, entered left-to-right:
+#   nn / nn - nnnnnnn [arabic letter] nn      e.g. 19/00-1163066ب23
+# It must print left-to-right exactly as typed, but a lone Arabic letter inside
+# a digit sequence makes every text-based approach depend on the bidi engine:
+# LRE/PDF embeddings get reordered by Word, LRI/PDI isolates show up as boxes
+# in Word, and run-splitting reorders in LibreOffice. So the value is rendered
+# as a small INLINE IMAGE instead — drawn glyph by glyph, left to right, at
+# high resolution. Pixels cannot be reordered by any bidi algorithm.
+RC_PART_KEYS = ("رقم_س_ت_1", "رقم_س_ت_2", "رقم_س_ت_3", "رقم_س_ت_حرف", "رقم_س_ت_4")
+# Liberation Sans is metric-compatible with Arial (the line's font) → the
+# digits keep the exact width/height Arial text would have. DejaVu supplies
+# the Arabic letter glyph, drawn on the same baseline.
+RC_FONT_DIGITS = BASE_DIR / "fonts" / "LiberationSans-Bold.ttf"
+RC_FONT_ARABIC = BASE_DIR / "fonts" / "DejaVuSans-Bold.ttf"
+RC_TEXT_PT = 12.0   # matches the Arial bold 12pt of the س ت line
+
+
+def rc_number_png(dcp_raw: Dict[str, str]):
+    """Draw the س ت value left-to-right into a PNG.
+    Returns (png_bytes, height_pt) or None when nothing was entered."""
+    p1, p2, p3, letter, p4 = (
+        str(dcp_raw.get(k, "") or "").strip() for k in RC_PART_KEYS
+    )
+    if not (p1 or p2 or p3 or p4):
+        return None
+
+    from PIL import Image, ImageDraw, ImageFont  # lazy: only DCP needs it
+
+    scale = 10                      # draw at 10× for crisp print quality
+    f_num = ImageFont.truetype(str(RC_FONT_DIGITS), int(RC_TEXT_PT * scale))
+    f_ar = ImageFont.truetype(str(RC_FONT_ARABIC), int(RC_TEXT_PT * scale))
+    segments = [(p1 + "/" + p2 + "-" + p3, f_num), (letter, f_ar), (p4, f_num)]
+    segments = [(s, f) for s, f in segments if s]
+
+    probe = ImageDraw.Draw(Image.new("L", (1, 1)))
+    widths = [probe.textlength(s, font=f) for s, f in segments]
+    baseline = max(f.getmetrics()[0] for _, f in segments)
+    H = baseline + max(f.getmetrics()[1] for _, f in segments)
+    W = int(sum(widths)) + 4
+
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    x = 0.0
+    for (seg, f), w in zip(segments, widths):
+        # anchor "ls": every segment sits on one shared baseline, advancing
+        # strictly left→right — the order is structural, no bidi involved.
+        draw.text((x, baseline), seg, font=f, fill=(0, 0, 0, 255), anchor="ls")
+        x += w
+
+    bbox = img.getbbox()
+    if bbox is None:
+        return None
+    img = img.crop(bbox)
+
+    # 1:1 with the surrounding 12pt Arial-metric text
+    height_pt = img.height / scale
+
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue(), round(height_pt, 2)
 
 LRE = chr(0x202A)  # LEFT-TO-RIGHT EMBEDDING
 PDF = chr(0x202C)  # POP DIRECTIONAL FORMATTING
@@ -127,6 +194,11 @@ class GenerateRequest(BaseModel):
     weight_of_all_containers: str = ""
     force_uppercase: bool = True
     containers: List[Container] = Field(default_factory=list)
+    # Which transit documents to generate (checkboxes in the UI)
+    doc_mise: bool = True     # MISE A QUAI — one file per container, ×2 copies
+    doc_lettre: bool = True   # LETTRE D'ENGAGEMENT — ×2 copies
+    doc_bon: bool = True      # BON DE COMMANDE — 1 copy
+    doc_merge: bool = False   # one Word file: Mise ×2 each + Lettre ×2 + Bon
     # Part 2 — DCP (تصريح باستيراد المنتوج); values kept exactly as typed
     dcp_enabled: bool = False
     dcp: Dict[str, str] = Field(default_factory=dict)
@@ -152,8 +224,11 @@ def strip_transit_prefix(name: str) -> str:
     return re.sub(r"^\s*transit[\s:,\-]+", "", name or "", flags=re.IGNORECASE).strip()
 
 
-def render_to_bytes(template_name: str, context: dict) -> bytes:
-    """Render one template entirely in memory and return the .docx bytes."""
+def render_to_bytes(template_name: str, context: dict,
+                    images: Dict[str, tuple] | None = None) -> bytes:
+    """Render one template entirely in memory and return the .docx bytes.
+    `images` maps a placeholder name to (png_bytes, height_pt) rendered as an
+    inline image at that placeholder (used for the bidi-proof س ت number)."""
     tpl_path = TEMPLATE_DIR / template_name
     if not tpl_path.exists():
         raise HTTPException(
@@ -161,9 +236,280 @@ def render_to_bytes(template_name: str, context: dict) -> bytes:
             detail=f"Template not found on server: {template_name}",
         )
     doc = DocxTemplate(str(tpl_path))
+    if images:
+        from docx.shared import Pt
+        from docxtpl import InlineImage
+        for field, (png, height_pt) in images.items():
+            context = {**context, field: InlineImage(
+                doc, io.BytesIO(png), height=Pt(height_pt)
+            )}
     doc.render(context)
     out = io.BytesIO()
     doc.save(out)
+    return out.getvalue()
+
+
+# --------------------------------------------------------------------------
+# Document merging — every part keeps its EXACT original layout
+# --------------------------------------------------------------------------
+# compose_docs stacks rendered .docx parts into one file with:
+#   * one SECTION per part, carrying that part's own page size/margins,
+#   * minimal style isolation: identical copies of the same template are
+#     left completely untouched; a part from a DIFFERENT template only gets
+#     the styles that actually differ (in practice: "Normal", plus its
+#     docDefaults when they differ) copied in under a private name, and its
+#     paragraphs pointed at that private style. Everything else is shared.
+# This was validated pixel-by-pixel against the standalone renders.
+# Constraint: parts must be self-contained (no images/hyperlinks — true for
+# all bundled templates, which is asserted at merge time).
+
+_STYLE_EL_RE = re.compile(r"<w:style\b[^>]*>.*?</w:style>", re.S)
+_STYLE_REF_RE = re.compile(r'(<w:(?:pStyle|rStyle|tblStyle) w:val=")([^"]+)(")')
+
+# schema order of the children we may have to insert when merging properties
+_RPR_ORDER = [
+    "rStyle", "rFonts", "b", "bCs", "i", "iCs", "caps", "smallCaps", "strike",
+    "dstrike", "outline", "shadow", "emboss", "imprint", "noProof",
+    "snapToGrid", "vanish", "webHidden", "color", "spacing", "w", "kern",
+    "position", "sz", "szCs", "highlight", "u", "effect", "bdr", "shd",
+    "fitText", "vertAlign", "rtl", "cs", "em", "lang", "eastAsianLayout",
+    "specVanish",
+]
+_PPR_ORDER = [
+    "pStyle", "keepNext", "keepLines", "pageBreakBefore", "framePr",
+    "widowControl", "numPr", "suppressLineNumbers", "pBdr", "shd", "tabs",
+    "suppressAutoHyphens", "kinsoku", "wordWrap", "overflowPunct",
+    "topLinePunct", "autoSpaceDE", "autoSpaceDN", "bidi", "adjustRightInd",
+    "snapToGrid", "spacing", "ind", "contextualSpacing", "mirrorIndents",
+    "suppressOverlap", "jc", "textDirection", "textAlignment",
+    "textboxTightWrap", "outlineLvl", "divId", "cnfStyle", "rPr", "sectPr",
+]
+
+
+def _part_pieces(docx_bytes: bytes):
+    """Split one rendered part into (document_xml, body_inner, sectPr, styles_xml)."""
+    with zipfile.ZipFile(io.BytesIO(docx_bytes)) as z:
+        document = z.read("word/document.xml").decode("utf-8")
+        styles = z.read("word/styles.xml").decode("utf-8")
+    m = re.search(r"<w:body>(.*)</w:body>", document, re.S)
+    body = m.group(1)
+    sect = re.search(r"(<w:sectPr[ >].*?</w:sectPr>)\s*$", body, re.S)
+    sectpr = sect.group(1) if sect else "<w:sectPr/>"
+    body = body[: sect.start()] if sect else body
+    return document, body, sectpr, styles
+
+
+def _norm(xml: str) -> str:
+    """Normalize XML for comparison: drop revision ids + default flags."""
+    xml = re.sub(r'\s+w:rsid\w*="[^"]*"', "", xml)
+    xml = re.sub(r"<w:rsid [^>]*/>", "", xml)
+    return xml.replace(' w:default="1"', "")
+
+
+def _style_map(styles_xml: str) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for s in _STYLE_EL_RE.findall(styles_xml):
+        m = re.search(r'w:styleId="([^"]+)"', s)
+        if m:
+            out[m.group(1)] = s
+    return out
+
+
+def _docdefaults(styles_xml: str) -> str:
+    m = re.search(r"<w:docDefaults>.*?</w:docDefaults>", styles_xml, re.S)
+    return m.group(0) if m else ""
+
+
+def _default_style_id(styles_xml: str, style_type: str) -> str:
+    """styleId of the w:default="1" style of the given type ("" if none)."""
+    for tag in re.findall(r"<w:style\b[^>]*>", styles_xml):
+        if f'w:type="{style_type}"' in tag and 'w:default="1"' in tag:
+            m = re.search(r'w:styleId="([^"]+)"', tag)
+            if m:
+                return m.group(1)
+    return ""
+
+
+def _children(container_inner: str) -> List[tuple]:
+    """Top-level (tag, xml) children of an element's inner XML."""
+    out = []
+    for m in re.finditer(r"<w:(\w+)\b[^>]*/>|<w:(\w+)\b[^>]*>.*?</w:\2>", container_inner, re.S):
+        out.append((m.group(1) or m.group(2), m.group(0)))
+    return out
+
+
+def _merge_props(defaults_inner: str, own_inner: str, order: List[str]) -> str:
+    """Merge docDefault properties under a style's own ones (own wins;
+    rFonts merges per attribute). Children are emitted in schema order."""
+    merged: Dict[str, str] = {t: x for t, x in _children(defaults_inner)}
+    own: Dict[str, str] = {t: x for t, x in _children(own_inner)}
+    for tag, xml in own.items():
+        if tag == "rFonts" and tag in merged:
+            attrs = dict(re.findall(r'(w:\w+)="([^"]*)"', merged[tag]))
+            attrs.update(re.findall(r'(w:\w+)="([^"]*)"', xml))
+            merged[tag] = "<w:rFonts " + " ".join(f'{k}="{v}"' for k, v in attrs.items()) + "/>"
+        else:
+            merged[tag] = xml
+    known = [merged[t] for t in order if t in merged]
+    unknown = [x for t, x in merged.items() if t not in order]
+    return "".join(known + unknown)
+
+
+def _bake_docdefaults(style: str, docdefaults: str) -> str:
+    """Copy a part's docDefault run/paragraph properties into a style so it no
+    longer depends on the (different) document-wide defaults."""
+    rpr_def = re.search(r"<w:rPrDefault>\s*<w:rPr>(.*?)</w:rPr>\s*</w:rPrDefault>", docdefaults, re.S)
+    ppr_def = re.search(r"<w:pPrDefault>\s*<w:pPr>(.*?)</w:pPr>\s*</w:pPrDefault>", docdefaults, re.S)
+    own_rpr = re.search(r"<w:rPr>(.*?)</w:rPr>", style, re.S)
+    own_ppr = re.search(r"<w:pPr>(.*?)</w:pPr>", style, re.S)
+
+    new_ppr = _merge_props(ppr_def.group(1) if ppr_def else "", own_ppr.group(1) if own_ppr else "", _PPR_ORDER)
+    new_rpr = _merge_props(rpr_def.group(1) if rpr_def else "", own_rpr.group(1) if own_rpr else "", _RPR_ORDER)
+
+    if own_ppr:
+        style = style.replace(own_ppr.group(0), f"<w:pPr>{new_ppr}</w:pPr>" if new_ppr else "", 1)
+    elif new_ppr:  # insert before rPr / tblPr / end
+        style = re.sub(r"(<w:rPr>|<w:tblPr>|</w:style>)", lambda m: f"<w:pPr>{new_ppr}</w:pPr>" + m.group(1), style, count=1)
+    if own_rpr:
+        style = style.replace(own_rpr.group(0), f"<w:rPr>{new_rpr}</w:rPr>" if new_rpr else "", 1)
+    elif new_rpr:
+        style = re.sub(r"(<w:tblPr>|</w:style>)", lambda m: f"<w:rPr>{new_rpr}</w:rPr>" + m.group(1), style, count=1)
+    return style
+
+
+def _isolate_part(body: str, styles_xml: str, base_map: Dict[str, str],
+                  base_dd: str, prefix: str):
+    """Give one part private copies of exactly the styles whose definitions
+    (or docDefaults) differ from the base document's. Returns the adjusted
+    body and the new style definitions to append."""
+    part_map = _style_map(styles_xml)
+    part_dd = _docdefaults(styles_xml)
+    dd_differs = _norm(part_dd) != _norm(base_dd)
+    def_para = _default_style_id(styles_xml, "paragraph") or "Normal"
+
+    # styles the part's rendering can reach: explicit references + the
+    # default paragraph style, expanded through basedOn/next/link chains
+    reachable = {m.group(2) for m in _STYLE_REF_RE.finditer(body)}
+    reachable.add(def_para)
+    changed = True
+    while changed:
+        changed = False
+        for sid in list(reachable):
+            for ref in re.findall(r'<w:(?:basedOn|next|link) w:val="([^"]+)"', part_map.get(sid, "")):
+                if ref not in reachable:
+                    reachable.add(ref)
+                    changed = True
+    reachable &= set(part_map)
+
+    # which reachable styles need a private copy?
+    if dd_differs:
+        rename = set(reachable)
+    else:
+        rename = {s for s in reachable
+                  if s not in base_map or _norm(part_map[s]) != _norm(base_map[s])}
+        changed = True
+        while changed:  # a style whose base/next/link was renamed follows it
+            changed = False
+            for sid in reachable - rename:
+                refs = re.findall(r'<w:(?:basedOn|next|link) w:val="([^"]+)"', part_map[sid])
+                if any(r in rename for r in refs):
+                    rename.add(sid)
+                    changed = True
+
+    new_defs: List[str] = []
+    for sid in rename:
+        style = part_map[sid].replace(' w:default="1"', "")
+        style = re.sub(r'(w:styleId=")([^"]+)(")', lambda m: m.group(1) + prefix + m.group(2) + m.group(3), style, count=1)
+        style = re.sub(r'(<w:name w:val=")([^"]*)(")', lambda m: m.group(1) + prefix + m.group(2) + m.group(3), style, count=1)
+        style = re.sub(
+            r'(<w:(?:basedOn|next|link) w:val=")([^"]+)(")',
+            lambda m: m.group(1) + (prefix + m.group(2) if m.group(2) in rename else m.group(2)) + m.group(3),
+            style,
+        )
+        has_based_on = re.search(r'<w:basedOn w:val="([^"]+)"', part_map[sid])
+        if dd_differs and (not has_based_on or has_based_on.group(1) not in part_map):
+            style = _bake_docdefaults(style, part_dd)
+        new_defs.append(style)
+
+    # body: repoint references to the private copies
+    body = _STYLE_REF_RE.sub(
+        lambda m: m.group(1) + (prefix + m.group(2) if m.group(2) in rename else m.group(2)) + m.group(3),
+        body,
+    )
+    # paragraphs without an explicit style follow the DOCUMENT default style,
+    # which belongs to the base part — pin them to this part's own Normal.
+    # (Verified pixel-identical; tables never need this: the default table
+    # style is identical across the bundled templates.)
+    if def_para in rename:
+        p_style = f'<w:pStyle w:val="{prefix}{def_para}"/>'
+        body = re.sub(r"<w:p((?:\s[^>]*?)?)/>",
+                      lambda m: f"<w:p{m.group(1)}><w:pPr>{p_style}</w:pPr></w:p>", body)
+        body = body.replace("<w:pPr/>", f"<w:pPr>{p_style}</w:pPr>")
+        body = re.sub(r"(<w:p(?:\s[^>]*)?>)<w:pPr>(?!<w:pStyle)",
+                      lambda m: m.group(1) + "<w:pPr>" + p_style, body)
+        body = re.sub(r"(<w:p(?:\s[^>]*)?>)(?!<w:pPr)",
+                      lambda m: m.group(1) + f"<w:pPr>{p_style}</w:pPr>", body)
+    return body, new_defs
+
+
+def _section_break(sectpr: str) -> str:
+    """Tiny paragraph closing a part's section (keeps its page geometry)."""
+    return (
+        '<w:p><w:pPr>'
+        '<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>'
+        '<w:rPr><w:sz w:val="2"/><w:szCs w:val="2"/></w:rPr>'
+        f"{sectpr}</w:pPr></w:p>"
+    )
+
+
+def compose_docs(parts: List[bytes]) -> bytes:
+    """Stack rendered .docx parts into ONE file — every part starts on a new
+    page and keeps its exact original layout. Used for the ×2 copies and for
+    the merged document."""
+    merged_bodies: List[str] = []
+    extra_styles: List[str] = []
+    base_document = base_styles = base_dd = ""
+    base_map: Dict[str, str] = {}
+    base_styles_norm = ""
+
+    for i, part_bytes in enumerate(parts):
+        document, body, sectpr, styles_xml = _part_pieces(part_bytes)
+        if i == 0:
+            base_document, base_styles = document, styles_xml
+            base_map, base_dd = _style_map(styles_xml), _docdefaults(styles_xml)
+            base_styles_norm = _norm(styles_xml)
+        elif _norm(styles_xml) != base_styles_norm:
+            # different template — isolate only what actually differs
+            if "r:embed=" in body or "r:id=" in body:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Merging failed: a template contains images or "
+                           "links, which the merged document does not support yet.",
+                )
+            body, new_defs = _isolate_part(body, styles_xml, base_map, base_dd, f"m{i}_")
+            extra_styles += new_defs
+        is_last = i == len(parts) - 1
+        merged_bodies.append(body + (sectpr if is_last else _section_break(sectpr)))
+
+    new_document = re.sub(
+        r"<w:body>.*</w:body>",
+        lambda m: "<w:body>" + "".join(merged_bodies) + "</w:body>",
+        base_document,
+        flags=re.S,
+    )
+    new_styles = base_styles.replace("</w:styles>", "".join(extra_styles) + "</w:styles>")
+
+    # container: first part's package with document.xml + styles.xml replaced
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(parts[0])) as zin, \
+         zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.namelist():
+            if item == "word/document.xml":
+                zout.writestr(item, new_document)
+            elif item == "word/styles.xml":
+                zout.writestr(item, new_styles)
+            else:
+                zout.writestr(item, zin.read(item))
     return out.getvalue()
 
 
@@ -242,11 +588,13 @@ def generate(req: GenerateRequest) -> StreamingResponse:
     }
 
     # --- Which parts are complete? (identical rules to the desktop app) ----
+    any_doc_selected = req.doc_mise or req.doc_lettre or req.doc_bon or req.doc_merge
     transit_ready = (
         bool(req.transit_name.strip())
         and bool(client_name)
         and len(req.containers) > 0
         and all(norm_number(c) for c in req.containers)
+        and any_doc_selected
     )
     dcp_ready = req.dcp_enabled
     produits = [
@@ -269,51 +617,76 @@ def generate(req: GenerateRequest) -> StreamingResponse:
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
 
-            # PART 1 — transit documents
+            # PART 1 — transit documents (only the types the user checked)
             if transit_ready:
-                zf.writestr(
-                    "BON_DE_COMMANDE_GENERATED.docx",
-                    render_to_bytes(TPL_BON, {
+                # Render each base document once, then duplicate/merge from it.
+                bon_bytes: bytes | None = None
+                lettre_bytes: bytes | None = None
+                mise_docs: List[tuple] = []  # (zip_name, single_copy_bytes)
+
+                if req.doc_bon or req.doc_merge:
+                    bon_bytes = render_to_bytes(TPL_BON, {
                         **common,
                         "transit_name": transit_bare,
                         "containers_20": numbers_for_size("20"),
                         "containers_40": numbers_for_size("40"),
                         "containers_45": numbers_for_size("45"),
-                    }),
-                )
-                zf.writestr(
-                    "LETTRE_D_ENGAGEMENT_GENERATED.docx",
-                    render_to_bytes(TPL_LETTRE, {
+                    })
+                if req.doc_lettre or req.doc_merge:
+                    lettre_bytes = render_to_bytes(TPL_LETTRE, {
                         **common,
                         "transit_name": transit_lettre,
                         "containers_size": containers_size,
-                    }),
-                )
-                used_names: set = set()
-                for c in req.containers:
-                    num = norm_number(c) or "UNKNOWN"
-                    name = f"MISE_A_QUAI_{sanitize_filename(num)}.docx"
-                    i = 2
-                    while name in used_names:
-                        name = f"MISE_A_QUAI_{sanitize_filename(num)}_{i}.docx"
-                        i += 1
-                    used_names.add(name)
-                    mise_ctx = {
-                        **common,
-                        "transit_name": transit_bare,
-                        "company_name": company_name,
-                        "container_number": num,
-                        "container_size": c.size,
-                        "container_marque": f"01TC{c.size}",  # always 01TC{size}
-                    }
-                    # AKKON + a BL number -> dedicated template with the BL line.
-                    if use_akkon_template:
-                        mise_ctx["BL_nb"] = bl_number
+                    })
+                if req.doc_mise or req.doc_merge:
+                    used_names: set = set()
+                    for c in req.containers:
+                        num = norm_number(c) or "UNKNOWN"
+                        name = f"MISE_A_QUAI_{sanitize_filename(num)}.docx"
+                        i = 2
+                        while name in used_names:
+                            name = f"MISE_A_QUAI_{sanitize_filename(num)}_{i}.docx"
+                            i += 1
+                        used_names.add(name)
+                        mise_ctx = {
+                            **common,
+                            "transit_name": transit_bare,
+                            "company_name": company_name,
+                            "container_number": num,
+                            "container_size": c.size,
+                            "container_marque": f"01TC{c.size}",  # always 01TC{size}
+                        }
+                        # AKKON + a BL number -> dedicated template with the BL line.
+                        if use_akkon_template:
+                            mise_ctx["BL_nb"] = bl_number
+                        mise_docs.append((name, render_to_bytes(
+                            TPL_MISE_AKKON if use_akkon_template else TPL_MISE,
+                            mise_ctx,
+                        )))
+
+                # Individual files — LETTRE ×2 copies, each MISE ×2 copies
+                # (second copy on a new page of the same file), BON ×1.
+                if req.doc_bon:
+                    zf.writestr("BON_DE_COMMANDE_GENERATED.docx", bon_bytes)
+                if req.doc_lettre:
                     zf.writestr(
-                        name,
-                        render_to_bytes(
-                            TPL_MISE_AKKON if use_akkon_template else TPL_MISE, mise_ctx
-                        ),
+                        "LETTRE_D_ENGAGEMENT_GENERATED.docx",
+                        compose_docs([lettre_bytes, lettre_bytes]),
+                    )
+                if req.doc_mise:
+                    for name, single in mise_docs:
+                        zf.writestr(name, compose_docs([single, single]))
+
+                # Merged file — every Mise ×2, then Lettre ×2, then Bon ×1,
+                # one below the other in a single Word document.
+                if req.doc_merge:
+                    merge_parts: List[bytes] = []
+                    for _, single in mise_docs:
+                        merge_parts += [single, single]
+                    merge_parts += [lettre_bytes, lettre_bytes, bon_bytes]
+                    zf.writestr(
+                        "DOSSIER_COMPLET_GENERATED.docx",
+                        compose_docs(merge_parts),
                     )
 
             # PART 2 — DCP (تصريح باستيراد المنتوج), values kept as typed
@@ -325,6 +698,14 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                     if field in DCP_DATE_FIELDS:
                         value = format_dcp_date(value)
                     raw[field] = value
+
+                # س ت from its 5 split parts -> rendered as an inline image
+                # (see rc_number_png); the legacy free-text value is kept as
+                # a fallback for old saved shipments.
+                plain_fields = set(DCP_PLAIN_FIELDS)
+                rc_image = rc_number_png(dcp_raw)
+                if rc_image:
+                    raw["رقم_س_ت"] = ""  # placeholder becomes the image
 
                 # القيمة is shipped together with the selected currency
                 currency = str(dcp_raw.get("القيمة_عملة", "") or "").strip() or "EUR"
@@ -338,12 +719,21 @@ def generate(req: GenerateRequest) -> StreamingResponse:
 
                 dcp_ctx = {}
                 for field, value in raw.items():
-                    if field == "الكمية" and value:
+                    if field in plain_fields:
+                        # LTR paragraph in the template — see DCP_PLAIN_FIELDS.
+                        dcp_ctx[field] = value
+                    elif field == "الكمية" and value:
                         dcp_ctx[field] = bidi_keep_as_typed(value) + " طن"
                     else:
                         dcp_ctx[field] = bidi_keep_as_typed(value)
 
-                zf.writestr("DCP_GENERATED.docx", render_to_bytes(TPL_DCP, dcp_ctx))
+                zf.writestr(
+                    "DCP_GENERATED.docx",
+                    render_to_bytes(
+                        TPL_DCP, dcp_ctx,
+                        images={"رقم_س_ت": rc_image} if rc_image else None,
+                    ),
+                )
 
             # PART 3 — Annexe (ملحق التعريفات الجمركية)
             if annex_ready:

@@ -5,7 +5,8 @@ that renders the .docx templates with docxtpl and returns them as one ZIP
 download. Three independent parts: transit documents (Bon de Commande, Lettre
 d'Engagement ×2, Mise à Quai ×2 per container — selectable via checkboxes,
 with an optional single merged Word file), the DCP declaration (تصريح باستيراد
-المنتوج) and the tariff annex (ملحق التعريفات الجمركية).
+المنتوج — generated as a fixed-layout PDF so it renders identically in every
+Word/LibreOffice version) and the tariff annex (ملحق التعريفات الجمركية).
 
 - `frontend/` — Vite + React + TypeScript + Tailwind CSS v4
   - `frontend/api/index.py` — the FastAPI serverless function

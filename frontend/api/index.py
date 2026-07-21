@@ -40,7 +40,7 @@ TPL_BON = "BON DE COMMANDE.docx"        # rendered once
 TPL_LETTRE = "LETTRE D'ENGAGEMENT.docx"   # rendered once
 TPL_MISE = "MISE A QUAI L.docx"         # rendered once PER container
 TPL_MISE_AKKON = "MISE A QUAI L - AKKON.docx"  # AKKON variant — adds BL number
-TPL_DCP = "DCP.docx"                    # rendered once (if enabled)
+# DCP (تصريح باستيراد المنتوج) is generated as a PDF — see api/dcp_pdf.py
 TPL_ANNEXE = "ANNEXE.docx"              # rendered once (if products present)
 
 app = FastAPI(title="Transit Document Generator API", version="2.0.0")
@@ -68,80 +68,12 @@ DCP_FIELDS = [
     # العبور / الوصول are static text inside DCP.docx now — no longer sent.
 ]
 DCP_DATE_FIELDS = {"تاريخ_الاستراد", "الفاتورة_تاريخ", "تاريخ_الانطلاق"}
-# Fields rendered WITHOUT bidi control marks. Their paragraph in DCP.docx is a
-# left-to-right paragraph ("بتاريخ: {{date}} ... {{value DA}}" line): the RLM
-# guards used elsewhere bridge the two values into one right-to-left stretch
-# and swap them, printing the DA amount next to بتاريخ instead of the date.
-# Plain digits/Latin text in an LTR paragraph always stays in typed order.
-DCP_PLAIN_FIELDS = {"القيمة_بالدينار", "الفاتورة_تاريخ"}
 
 # رقم السجل التجاري (س ت) arrives split into 5 parts, entered left-to-right:
 #   nn / nn - nnnnnnn [arabic letter] nn      e.g. 19/00-1163066ب23
-# It must print left-to-right exactly as typed, but a lone Arabic letter inside
-# a digit sequence makes every text-based approach depend on the bidi engine:
-# LRE/PDF embeddings get reordered by Word, LRI/PDI isolates show up as boxes
-# in Word, and run-splitting reorders in LibreOffice. So the value is rendered
-# as a small INLINE IMAGE instead — drawn glyph by glyph, left to right, at
-# high resolution. Pixels cannot be reordered by any bidi algorithm.
+# The DCP is generated as a PDF (api/dcp_pdf.py), which draws this number
+# segment by segment strictly left-to-right — immune to bidi reordering.
 RC_PART_KEYS = ("رقم_س_ت_1", "رقم_س_ت_2", "رقم_س_ت_3", "رقم_س_ت_حرف", "رقم_س_ت_4")
-# Liberation Sans is metric-compatible with Arial (the line's font) → the
-# digits keep the exact width/height Arial text would have. DejaVu supplies
-# the Arabic letter glyph, drawn on the same baseline.
-RC_FONT_DIGITS = BASE_DIR / "fonts" / "LiberationSans-Bold.ttf"
-RC_FONT_ARABIC = BASE_DIR / "fonts" / "DejaVuSans-Bold.ttf"
-RC_TEXT_PT = 12.0   # matches the Arial bold 12pt of the س ت line
-
-
-def rc_number_png(dcp_raw: Dict[str, str]):
-    """Draw the س ت value left-to-right into a PNG.
-    Returns (png_bytes, height_pt) or None when nothing was entered."""
-    p1, p2, p3, letter, p4 = (
-        str(dcp_raw.get(k, "") or "").strip() for k in RC_PART_KEYS
-    )
-    if not (p1 or p2 or p3 or p4):
-        return None
-
-    from PIL import Image, ImageDraw, ImageFont  # lazy: only DCP needs it
-
-    scale = 10                      # draw at 10× for crisp print quality
-    f_num = ImageFont.truetype(str(RC_FONT_DIGITS), int(RC_TEXT_PT * scale))
-    f_ar = ImageFont.truetype(str(RC_FONT_ARABIC), int(RC_TEXT_PT * scale))
-    segments = [(p1 + "/" + p2 + "-" + p3, f_num), (letter, f_ar), (p4, f_num)]
-    segments = [(s, f) for s, f in segments if s]
-
-    probe = ImageDraw.Draw(Image.new("L", (1, 1)))
-    widths = [probe.textlength(s, font=f) for s, f in segments]
-    baseline = max(f.getmetrics()[0] for _, f in segments)
-    H = baseline + max(f.getmetrics()[1] for _, f in segments)
-    W = int(sum(widths)) + 4
-
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    x = 0.0
-    for (seg, f), w in zip(segments, widths):
-        # anchor "ls": every segment sits on one shared baseline, advancing
-        # strictly left→right — the order is structural, no bidi involved.
-        draw.text((x, baseline), seg, font=f, fill=(0, 0, 0, 255), anchor="ls")
-        x += w
-
-    bbox = img.getbbox()
-    if bbox is None:
-        return None
-    img = img.crop(bbox)
-
-    # 1:1 with the surrounding 12pt Arial-metric text
-    height_pt = img.height / scale
-
-    out = io.BytesIO()
-    img.save(out, format="PNG")
-    return out.getvalue(), round(height_pt, 2)
-
-LRE = chr(0x202A)  # LEFT-TO-RIGHT EMBEDDING
-PDF = chr(0x202C)  # POP DIRECTIONAL FORMATTING
-RLM = chr(0x200F)  # RIGHT-TO-LEFT MARK (invisible)
-LRM = chr(0x200E)  # LEFT-TO-RIGHT MARK (invisible)
-_AR = (0x0590, 0x08FF), (0xFB50, 0xFDFF), (0xFE70, 0xFEFF)
-ARABIC_CHAR = re.compile("[" + "".join(chr(a) + "-" + chr(b) for a, b in _AR) + "]")
 
 
 def format_dcp_date(value: str) -> str:
@@ -149,24 +81,6 @@ def format_dcp_date(value: str) -> str:
     value = (value or "").strip()
     m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", value)
     return f"{m.group(3)}/{m.group(2)}/{m.group(1)}" if m else value
-
-
-def bidi_keep_as_typed(value: str) -> str:
-    """Keep mixed/Latin/numeric text displayed exactly as the user typed it
-    inside the right-to-left DCP paragraphs (mirrors HTML dir="auto")."""
-    for ch in value:
-        if ARABIC_CHAR.match(ch):
-            return value  # starts with Arabic -> natural RTL flow already
-        if ch.isalpha():
-            # Latin-first value: keep it one left-to-right unit, and put an
-            # invisible RTL mark on each side so neighbouring item numbers
-            # like "14)" can no longer merge into it.
-            return RLM + LRE + value + PDF + RLM
-    if not value:
-        return value
-    # Digits-only values (dates, amounts): same guards, plus an invisible
-    # LTR anchor after each "/" so Word keeps dd/mm/yyyy in the typed order.
-    return RLM + LRE + value.replace("/", "/" + LRM) + PDF + RLM
 
 
 # --------------------------------------------------------------------------
@@ -224,11 +138,8 @@ def strip_transit_prefix(name: str) -> str:
     return re.sub(r"^\s*transit[\s:,\-]+", "", name or "", flags=re.IGNORECASE).strip()
 
 
-def render_to_bytes(template_name: str, context: dict,
-                    images: Dict[str, tuple] | None = None) -> bytes:
-    """Render one template entirely in memory and return the .docx bytes.
-    `images` maps a placeholder name to (png_bytes, height_pt) rendered as an
-    inline image at that placeholder (used for the bidi-proof س ت number)."""
+def render_to_bytes(template_name: str, context: dict) -> bytes:
+    """Render one template entirely in memory and return the .docx bytes."""
     tpl_path = TEMPLATE_DIR / template_name
     if not tpl_path.exists():
         raise HTTPException(
@@ -236,13 +147,6 @@ def render_to_bytes(template_name: str, context: dict,
             detail=f"Template not found on server: {template_name}",
         )
     doc = DocxTemplate(str(tpl_path))
-    if images:
-        from docx.shared import Pt
-        from docxtpl import InlineImage
-        for field, (png, height_pt) in images.items():
-            context = {**context, field: InlineImage(
-                doc, io.BytesIO(png), height=Pt(height_pt)
-            )}
     doc.render(context)
     out = io.BytesIO()
     doc.save(out)
@@ -689,7 +593,10 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                         compose_docs(merge_parts),
                     )
 
-            # PART 2 — DCP (تصريح باستيراد المنتوج), values kept as typed
+            # PART 2 — DCP (تصريح باستيراد المنتوج) — generated as a PDF.
+            # A PDF is laid out ONCE on the server and renders identically in
+            # every viewer/printer (Office 2010, LibreOffice, phones), which
+            # ended the cross-application layout breakage of the .docx paper.
             if dcp_ready:
                 dcp_raw = req.dcp or {}
                 raw: Dict[str, str] = {}
@@ -698,14 +605,6 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                     if field in DCP_DATE_FIELDS:
                         value = format_dcp_date(value)
                     raw[field] = value
-
-                # س ت from its 5 split parts -> rendered as an inline image
-                # (see rc_number_png); the legacy free-text value is kept as
-                # a fallback for old saved shipments.
-                plain_fields = set(DCP_PLAIN_FIELDS)
-                rc_image = rc_number_png(dcp_raw)
-                if rc_image:
-                    raw["رقم_س_ت"] = ""  # placeholder becomes the image
 
                 # القيمة is shipped together with the selected currency
                 currency = str(dcp_raw.get("القيمة_عملة", "") or "").strip() or "EUR"
@@ -716,24 +615,22 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                 # القيمة بالدينار is always shipped with DA
                 if raw["القيمة_بالدينار"]:
                     raw["القيمة_بالدينار"] += " DA"
+                # الكمية is always in tonnes
+                if raw["الكمية"]:
+                    raw["الكمية"] += " طن"
 
-                dcp_ctx = {}
-                for field, value in raw.items():
-                    if field in plain_fields:
-                        # LTR paragraph in the template — see DCP_PLAIN_FIELDS.
-                        dcp_ctx[field] = value
-                    elif field == "الكمية" and value:
-                        dcp_ctx[field] = bidi_keep_as_typed(value) + " طن"
-                    else:
-                        dcp_ctx[field] = bidi_keep_as_typed(value)
-
-                zf.writestr(
-                    "DCP_GENERATED.docx",
-                    render_to_bytes(
-                        TPL_DCP, dcp_ctx,
-                        images={"رقم_س_ت": rc_image} if rc_image else None,
-                    ),
+                rc_parts = tuple(
+                    str(dcp_raw.get(k, "") or "").strip() for k in RC_PART_KEYS
                 )
+                try:
+                    from api.dcp_pdf import build_dcp_pdf
+                except ImportError:  # loaded outside the package context
+                    import sys
+                    if str(BASE_DIR) not in sys.path:
+                        sys.path.append(str(BASE_DIR))
+                    from dcp_pdf import build_dcp_pdf
+
+                zf.writestr("DCP_GENERATED.pdf", build_dcp_pdf(raw, rc_parts))
 
             # PART 3 — Annexe (ملحق التعريفات الجمركية)
             if annex_ready:

@@ -46,6 +46,12 @@ X_FORM = 340                             # right edge of the form column
 X_LEFT = 24                              # minimum left edge for form rows
 COL_GAP = 12                             # required gap between the columns
 BODY_PT = 11.5                           # nominal body size (auto-fits down)
+
+# page border — a single light dash-dot line, like the .docx "dashDotStroked"
+BORDER_INK = (0, 0, 0)                    # black, as in the original
+BORDER_W = 1.0                            # thin line (not the heavy 3pt frame)
+BORDER_INSET = 16.0                       # inset from the page edge
+BORDER_DASH = (5, 2, 1, 2)               # dash, gap, dot, gap  (dash-dot)
 INS_PT = 10.6                            # instruction column size
 
 _AR_RE = re.compile("[\u0590-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]")
@@ -145,10 +151,11 @@ class _Draw:
 
 # ---------------------------------------------------------------------------
 # form-row composition: tokens laid RIGHT -> LEFT from a given x
-#   ("t",  logical_text)          static/label text (bidi-ordered once, here)
-#   ("v",  value, dots_width)     typed value, or a dotted blank when empty
-#   ("rc", parts, dots_width)     the س ت number, drawn manually left->right
-#   ("g",  width)                 fixed gap
+#   ("t",  logical_text)             static/label text (bidi-ordered here)
+#   ("v",  value, dots_width[, sc])  typed value (optional per-value scale sc),
+#                                    or a dotted blank when the value is empty
+#   ("rc", parts, dots_width)        the س ت number, drawn manually left->right
+#   ("g",  width)                    fixed gap
 # ---------------------------------------------------------------------------
 
 
@@ -162,6 +169,10 @@ def _rc_visual_parts(parts: Tuple[str, str, str, str, str]) -> List[str]:
     return out
 
 
+def _v_scale(tok: tuple) -> float:
+    return tok[3] if len(tok) > 3 else 1.0
+
+
 def _row_width(d: "_Draw", tokens: List[tuple]) -> float:
     """Total width of a form row (labels at body size, data at value size)."""
     total = 0.0
@@ -172,7 +183,7 @@ def _row_width(d: "_Draw", tokens: List[tuple]) -> float:
             total += d.w(_vis(tok[1]))
         elif kind == "v":
             if tok[1]:
-                d.value_size()
+                d.size((d.body_pt + VALUE_PT_DELTA) * _v_scale(tok))
                 total += d.w(_value_vis(tok[1])) + VALUE_BOLDEN
             else:
                 d.form_size()
@@ -204,7 +215,7 @@ def _draw_row(d: _Draw, y: float, tokens: List[tuple], x_start: float = X_FORM):
         elif kind == "v":
             value, dots_w = tok[1], tok[2]
             if value:
-                d.value_size()
+                d.size((d.body_pt + VALUE_PT_DELTA) * _v_scale(tok))
                 v = _value_vis(value)
                 w = d.w(v) + VALUE_BOLDEN
                 d.value_text(x - w, y, v)
@@ -258,6 +269,15 @@ def build_dcp_pdf(fields: Dict[str, str],
     pdf.set_title("تصريح باستيراد المنتوج — DCP")
 
     d = _Draw(pdf)
+
+    # ---------------- page border (light dash-dot line, like the .docx) ----
+    pdf.set_draw_color(*BORDER_INK)
+    pdf.set_line_width(BORDER_W)
+    pdf._out("[" + " ".join(str(n) for n in BORDER_DASH) + "] 0 d")  # dash-dot
+    pdf.rect(BORDER_INSET, BORDER_INSET,
+             PAGE_W - 2 * BORDER_INSET, PAGE_H - 2 * BORDER_INSET, style="D")
+    pdf._out("[] 0 d")  # reset to solid for everything else
+
     d.ink(FORM_INK)  # everything static prints in the softened paper gray
 
     # ---------------- header ----------------
@@ -276,29 +296,51 @@ def build_dcp_pdf(fields: Dict[str, str],
              "المادة3 من المرسوم التنفيذي رقم05-467مؤرخ في8دي القعدة عام1426الموافق10 ديسمبر في2005")
 
     # ---------------- body ----------------
-    # long addresses wrap onto a second line instead of leaving the paper
-    d.form_size()
-    addr_label_w = d.w(_vis("(2)العنوان: "))
-    addr_budget = (X_FORM - addr_label_w) - X_LEFT
-    addr = f.get("العنوان", "")
-    addr_lines = [addr]
-    d.value_size()
-    if addr and d.w(_value_vis(addr)) + VALUE_BOLDEN > addr_budget:
-        words = addr.split()
-        first: List[str] = []
-        while words:
-            trial = " ".join(first + [words[0]])
-            if first and d.w(_value_vis(trial)) + VALUE_BOLDEN > addr_budget:
+    # Long single-value fields (المستورد, العنوان, الصانع) wrap onto a second
+    # line instead of running off the paper. Each wrap adds WRAP_GAP of room
+    # so everything below it slides down and the continuation is never squeezed.
+    WRAP_GAP = 14        # vertical room a wrap adds to the rows beneath it
+    CONT_DY = 16         # continuation line sits this far below its main line
+    CONT_INSET = 10      # continuation nudged left, clear of both lines
+
+    def _vw(s: str) -> float:                       # value width at value size
+        d.value_size()
+        return d.w(_value_vis(s)) + VALUE_BOLDEN
+
+    def _wrap(label: str, value: str, x_start: float = X_FORM):
+        """(line1, line2|None, scale): if the value overruns its slot, split it
+        into two BALANCED lines (near-equal width) and, only if a line is still
+        too wide, shrink just this field's value font so both lines fit."""
+        d.form_size()
+        budget = (x_start - d.w(_vis(label))) - X_LEFT
+        d.form_size()
+        if not value or _vw(value) <= budget:
+            return value, None, 1.0
+        # balanced split: grow line 1 until it passes half the total width
+        words = value.split()
+        half = _vw(value) / 2
+        first = [words[0]]
+        for word in words[1:]:
+            if _vw(" ".join(first + [word])) > half:
                 break
-            first.append(words.pop(0))
-        addr_lines = [" ".join(first), " ".join(words)]
+            first.append(word)
+        line1, line2 = " ".join(first), " ".join(words[len(first):])
+        widest = max(_vw(line1), _vw(line2) if line2 else 0)
+        scale = min(1.0, budget / widest) if widest else 1.0
+        return line1, (line2 or None), round(scale, 3)
+
+    LBL_IMPORT, LBL_ADDR, LBL_MAKER = "(1)المستورد:  ", "(2)العنوان: ", "(10)الصانع:"
+    imp1, imp2, imp_s = _wrap(LBL_IMPORT, f.get("المستورد", ""))
+    adr1, adr2, adr_s = _wrap(LBL_ADDR, f.get("العنوان", ""))
+    mak1, mak2, mak_s = _wrap(LBL_MAKER, f.get("الصانع", ""))
     d.form_size()
-    # a wrapped address gets its own breathing room: everything from line
-    # (3)تعيين downwards moves down so the continuation is not squeezed
-    y_shift = 14 if len(addr_lines) > 1 and addr_lines[1] else 0
+
+    # cumulative downward shift: a row moves down by WRAP_GAP for every wrapped
+    # field placed above it (fields sit at base y 268 / 316 / 462)
+    wrap_ys = [y for y, second in ((268, imp2), (316, adr2), (462, mak2)) if second]
 
     def _y(y: float) -> float:
-        return y + y_shift if y >= 340 else y
+        return y + WRAP_GAP * sum(1 for wy in wrap_ys if y > wy)
 
     # instruction column (right) — each line shrinks alone if it would ever
     # cross into the form column, so the two columns always stay separated
@@ -336,10 +378,10 @@ def build_dcp_pdf(fields: Dict[str, str],
     # keeps every row inside the page (long values shrink the whole column
     # evenly instead of breaking the layout)
     ROWS: List[tuple] = [
-        (268, [("t", "(1)المستورد:  "), ("v", f.get("المستورد", ""), 200)], X_FORM),
+        (268, [("t", LBL_IMPORT), ("v", imp1, 200, imp_s)], X_FORM),
         (292, [("t", "رقم وتاريخ س ت:"), ("rc", rc_parts, 95), ("g", 4),
                ("t", "بتاريخ:"), ("v", f.get("تاريخ_الاستراد", ""), 60)], X_FORM),
-        (316, [("t", "(2)العنوان: "), ("v", addr_lines[0], 200)], X_FORM),
+        (316, [("t", LBL_ADDR), ("v", adr1, 200, adr_s)], X_FORM),
         (340, [("t", "(3)تعيين المنتوج:"), ("v", f.get("تعيين_المنتوج", ""), 185)], X_FORM),
         (364, [("t", "(4)معروض في: "), ("v", f.get("معروض_في", ""), 58), ("g", 8),
                ("t", "(5)متكون من : "), ("v", f.get("متكون_من", ""), 58)], X_FORM),
@@ -349,7 +391,7 @@ def build_dcp_pdf(fields: Dict[str, str],
                ("t", "(9)القيمة: "), ("v", f.get("القيمة", ""), 76)], X_FORM),
         (436, [("t", "بتاريخ: "), ("v", f.get("الفاتورة_تاريخ", ""), 60), ("g", 34),
                ("v", f.get("القيمة_بالدينار", ""), 92)], X_FORM - 40),
-        (462, [("t", "(10)الصانع:"), ("v", f.get("الصانع", ""), 195)], X_FORM),
+        (462, [("t", LBL_MAKER), ("v", mak1, 195, mak_s)], X_FORM),
         (487, [("t", "(11) مكان المصدر : "), ("v", f.get("مكان_المصدر", ""), 175)], X_FORM),
         (511, [("t", "(12) رقم الحصة:"), ("v", "", 205)], X_FORM),
         (536, [("t", "(13) اشهاد المنتوج :"), ("t", ".....شهادة المنشأ"), ("v", "", 105)], X_FORM),
@@ -367,18 +409,27 @@ def build_dcp_pdf(fields: Dict[str, str],
         (718, [("t", "(16) العبور : "), ("v", "مباشر", 0), ("g", 24),
                ("t", "(16)الوصول: "), ("v", "عنابة", 0)], X_FORM),
     ]
-    if y_shift:
-        # continuation of a long address: a touch lower than line (2) and
-        # inset from the right so it stands clear of both lines
-        ROWS.insert(3, (332, [("v", addr_lines[1], 0)],
-                        X_FORM - addr_label_w - 10))
+
+    # continuation lines for the wrapped fields, positioned just under their
+    # main line (which already carries the shifts of any wrap above it)
+    d.form_size()
+    CONTINUATIONS: List[tuple] = []
+    for base_y, label, second, scale in ((268, LBL_IMPORT, imp2, imp_s),
+                                         (316, LBL_ADDR, adr2, adr_s),
+                                         (462, LBL_MAKER, mak2, mak_s)):
+        if second:
+            CONTINUATIONS.append((
+                _y(base_y) + CONT_DY,
+                [("v", second, 0, scale)],
+                X_FORM - d.w(_vis(label)) - CONT_INSET,
+            ))
 
     # one uniform size for the whole column; iterate because entered data
     # keeps a fixed size bonus over the shrinking body size
     d.body_pt = BODY_PT
     for _ in range(3):
         shrink = 1.0
-        for _, tokens, x_start in ROWS:
+        for _, tokens, x_start in ROWS + CONTINUATIONS:
             width = _row_width(d, tokens)
             budget = x_start - X_LEFT
             if width > budget:
@@ -388,6 +439,8 @@ def build_dcp_pdf(fields: Dict[str, str],
         d.body_pt = max(d.body_pt * shrink, 9.0)
     for y, tokens, x_start in ROWS:
         _draw_row(d, _y(y), tokens, x_start)
+    for abs_y, tokens, x_start in CONTINUATIONS:
+        _draw_row(d, abs_y, tokens, x_start)
 
     # ---------------- footer ----------------
     d.size(11)

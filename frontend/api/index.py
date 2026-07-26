@@ -42,6 +42,7 @@ TPL_MISE = "MISE A QUAI L.docx"         # rendered once PER container
 TPL_MISE_AKKON = "MISE A QUAI L - AKKON.docx"  # AKKON variant — adds BL number
 # DCP (تصريح باستيراد المنتوج) is generated as a PDF — see api/dcp_pdf.py
 TPL_ANNEXE = "ANNEXE.docx"              # rendered once (if products present)
+TPL_MANDAT = "MANDAT MSC.docx"          # rendered once (autorisation aux mandataires)
 
 app = FastAPI(title="Transit Document Generator API", version="2.0.0")
 
@@ -98,6 +99,19 @@ class Produit(BaseModel):
     code: str = ""
 
 
+class Mandat(BaseModel):
+    """Autorisation aux mandataires (MSC). client_name / transit_name are not
+    here — they are reused from the transit part of the form."""
+    client_username: str = ""   # personne à contacter, côté entreprise
+    client_email: str = ""
+    client_address: str = ""
+    client_phone: str = ""
+    transit_username: str = ""  # personne à contacter, côté transitaire
+    transit_email: str = ""
+    transit_address: str = ""
+    transit_phone: str = ""
+
+
 class GenerateRequest(BaseModel):
     # Part 1 — transit documents
     transit_name: str = ""
@@ -118,6 +132,9 @@ class GenerateRequest(BaseModel):
     dcp: Dict[str, str] = Field(default_factory=dict)
     # Part 3 — Annexe (ملحق التعريفات الجمركية)
     dcp_produits: List[Produit] = Field(default_factory=list)
+    # Part 4 — Mandat MSC (autorisation aux mandataires)
+    mandat_enabled: bool = False
+    mandat: Mandat = Field(default_factory=Mandat)
 
 
 # --------------------------------------------------------------------------
@@ -507,13 +524,20 @@ def generate(req: GenerateRequest) -> StreamingResponse:
         if p.produit.strip() or p.code.strip()
     ]
     annex_ready = len(produits) > 0
+    # The Mandat reuses client_name / transit_name from the transit part, so it
+    # only needs those two — not the containers.
+    mandat_ready = (
+        req.mandat_enabled
+        and bool(client_name)
+        and bool(req.transit_name.strip())
+    )
 
-    if not (transit_ready or dcp_ready or annex_ready):
+    if not (transit_ready or dcp_ready or annex_ready or mandat_ready):
         raise HTTPException(
             status_code=400,
             detail="Nothing to generate: complete at least one part — transit "
-                   "documents (names + containers), the DCP declaration, or "
-                   "the tariff annex.",
+                   "documents (names + containers), the DCP declaration, the "
+                   "tariff annex, or the Mandat MSC (client + transit name).",
         )
 
     # --- Render everything into an in-memory ZIP ---------------------------
@@ -637,6 +661,30 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                 zf.writestr(
                     "ANNEXE_TARIFAIRE_GENERATED.docx",
                     render_to_bytes(TPL_ANNEXE, {"produits": produits}),
+                )
+
+            # PART 4 — Mandat MSC (autorisation aux mandataires).
+            # client_name / transit_name come from the transit part (already
+            # uppercased when the toggle is on); the contact details are kept
+            # exactly as typed — uppercasing an e-mail address would be wrong.
+            # The letter is dated on the day it is generated.
+            if mandat_ready:
+                m = req.mandat
+                zf.writestr(
+                    "MANDAT_MSC_GENERATED.docx",
+                    render_to_bytes(TPL_MANDAT, {
+                        "date": datetime.now().strftime("%d/%m/%Y"),
+                        "client_name": client_name,
+                        "client_username": m.client_username.strip(),
+                        "client_email": m.client_email.strip(),
+                        "client_address": m.client_address.strip(),
+                        "client_phone": m.client_phone.strip(),
+                        "transit_name": transit_lettre,
+                        "transit_username": m.transit_username.strip(),
+                        "transit_email": m.transit_email.strip(),
+                        "transit_address": m.transit_address.strip(),
+                        "transit_phone": m.transit_phone.strip(),
+                    }),
                 )
 
     except HTTPException:

@@ -66,6 +66,21 @@ type GeneratePayload = {
   dcp_enabled: boolean;
   dcp: Record<string, string>;
   dcp_produits: { produit: string; code: string }[];
+  /* Mandat MSC — client_name / transit_name are reused from the fields above */
+  mandat_enabled: boolean;
+  mandat: MandatFields;
+};
+
+/** Contact block of the Mandat MSC letter (both columns of its table). */
+type MandatFields = {
+  client_username: string;
+  client_email: string;
+  client_address: string;
+  client_phone: string;
+  transit_username: string;
+  transit_email: string;
+  transit_address: string;
+  transit_phone: string;
 };
 
 type HistoryEntry = {
@@ -268,6 +283,35 @@ const marqueFor = (size: Size) => `01TC${size}`;
  *  MISE A QUAI. "OTHER" lets the user type a custom company name. */
 const COMPANIES: string[] = ["CMA", "AKKON", "MSC", "HMM", "WHITE LINE", "COSCO"];
 
+/* --------------------------------------------------------------------------
+ * Mandat MSC (autorisation aux mandataires)
+ * ------------------------------------------------------------------------ */
+
+/** The transitaire side rarely changes — prefilled, still editable. */
+const initialMandat: MandatFields = {
+  client_username: "",
+  client_email: "",
+  client_address: "",
+  client_phone: "",
+  transit_username: "Belarbi Tayeb",
+  transit_email: "transittayeb@gmail.com",
+  transit_address: "",
+  transit_phone: "+213 675714539",
+};
+
+const MANDAT_ROWS: {
+  label: string;
+  client: keyof MandatFields;
+  transit: keyof MandatFields;
+  type?: "email" | "tel";
+  placeholder?: string;
+}[] = [
+  { label: "Personne à contacter", client: "client_username", transit: "transit_username", placeholder: "e.g. M. Benali" },
+  { label: "Email", client: "client_email", transit: "transit_email", type: "email", placeholder: "e.g. contact@societe.dz" },
+  { label: "Adresse postale", client: "client_address", transit: "transit_address", placeholder: "e.g. 12 Rue X, Alger" },
+  { label: "Téléphone", client: "client_phone", transit: "transit_phone", type: "tel", placeholder: "e.g. +213 21 00 00 00" },
+];
+
 const sanitizeForFilename = (s: string) =>
   s.trim().replace(/[\\/:*?"<>|]+/g, "_").replace(/\s+/g, "_") || "DOCUMENTS";
 
@@ -292,6 +336,8 @@ type FormState = {
   dcp_enabled: boolean;
   dcp: Record<string, string>;
   dcp_produits: DcpProduit[];
+  mandat_enabled: boolean;
+  mandat: MandatFields;
 };
 
 const initialForm: FormState = {
@@ -311,12 +357,15 @@ const initialForm: FormState = {
   dcp_enabled: false,
   dcp: { ...initialDcp },
   dcp_produits: [],
+  mandat_enabled: false,
+  mandat: { ...initialMandat },
 };
 
 function App() {
   const [form, setForm] = useState<FormState>({
     ...initialForm,
     dcp: { ...initialDcp },
+    mandat: { ...initialMandat },
   });
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
   const [historyOpen, setHistoryOpen] = useState(false); // mobile drawer
@@ -366,7 +415,13 @@ function App() {
   const annexReady = form.dcp_produits.some(
     (p) => p.produit.trim() !== "" || p.code.trim() !== ""
   );
-  const canGenerate = transitReady || dcpReady || annexReady;
+  /* The Mandat reuses the two names from Global details — nothing else from
+     the transit part, so it can be generated without any container. */
+  const mandatReady =
+    form.mandat_enabled &&
+    form.transit_name.trim() !== "" &&
+    form.client_name.trim() !== "";
+  const canGenerate = transitReady || dcpReady || annexReady || mandatReady;
   const docCount =
     (transitReady
       ? (form.doc_mise ? counts.total : 0) +
@@ -375,7 +430,8 @@ function App() {
         (form.doc_merge ? 1 : 0)
       : 0) +
     (dcpReady ? 1 : 0) +
-    (annexReady ? 1 : 0);
+    (annexReady ? 1 : 0) +
+    (mandatReady ? 1 : 0);
 
   /** The live DCP paper: available on large screens while DCP is enabled. */
   const paperAvailable = form.dcp_enabled;
@@ -410,6 +466,12 @@ function App() {
 
   const updateDcp = (key: string, value: string) => {
     setForm((prev) => ({ ...prev, dcp: { ...prev.dcp, [key]: value } }));
+  };
+
+  /* --- Mandat MSC handlers ------------------------------------------------ */
+
+  const updateMandat = (key: keyof MandatFields, value: string) => {
+    setForm((prev) => ({ ...prev, mandat: { ...prev.mandat, [key]: value } }));
   };
 
   /* Annex products (ملحق التعريفات الجمركية) */
@@ -646,7 +708,12 @@ function App() {
   };
 
   const clearForm = () => {
-    setForm({ ...initialForm, dcp: { ...initialDcp }, dcp_produits: [] });
+    setForm({
+      ...initialForm,
+      dcp: { ...initialDcp },
+      dcp_produits: [],
+      mandat: { ...initialMandat },
+    });
     setError(null);
     setKbField(null);
     // AI state
@@ -702,6 +769,8 @@ function App() {
         produit: pr.produit ?? "",
         code: pr.code ?? "",
       })),
+      mandat_enabled: p.mandat_enabled ?? false,
+      mandat: { ...initialMandat, ...(p.mandat ?? {}) },
     });
     setHistoryOpen(false);
     setError(null);
@@ -752,6 +821,8 @@ function App() {
         produit: p.produit,
         code: p.code,
       })),
+      mandat_enabled: form.mandat_enabled,
+      mandat: { ...form.mandat },
     };
 
     try {
@@ -1572,6 +1643,121 @@ function App() {
                   </div>
                 )}
               </section>
+
+              {/* Mandat MSC — autorisation aux mandataires */}
+              <section className="card">
+                <label className="flex items-center gap-3 cursor-pointer select-none">
+                  <span className="relative shrink-0">
+                    <input
+                      type="checkbox"
+                      name="mandat_enabled"
+                      checked={form.mandat_enabled}
+                      onChange={handleInputChange}
+                      className="peer sr-only"
+                    />
+                    <span className="block w-10 h-6 rounded-full bg-slate-700 peer-checked:bg-indigo-500 transition-colors" />
+                    <span className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform peer-checked:translate-x-4" />
+                  </span>
+                  <span className="flex items-center gap-2.5">
+                    <ScrollText size={18} className="text-indigo-400 shrink-0" />
+                    <span>
+                      <span className="block text-base font-bold text-white">
+                        Mandat MSC
+                      </span>
+                      <span className="block text-xs text-slate-400 mt-0.5">
+                        Autorisation aux mandataires — lettre datée du jour
+                      </span>
+                    </span>
+                  </span>
+                </label>
+
+                {form.mandat_enabled && (
+                  <div className="mt-6">
+                    {!mandatReady && (
+                      <p className="mb-4 flex items-start gap-2 text-xs text-amber-300/90 p-3 rounded-lg bg-amber-400/10 border border-amber-400/30">
+                        <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                        <span>
+                          Fill <strong>Transit name</strong> and{" "}
+                          <strong>Client name</strong> in “Global details” above — the
+                          Mandat reuses them.
+                        </span>
+                      </p>
+                    )}
+
+                    {/* Column headers mirroring the letter's contact table */}
+                    <div className="hidden sm:grid grid-cols-[9rem_1fr_1fr] gap-3 mb-2 px-1">
+                      <span />
+                      <span className="text-[11px] font-bold uppercase tracking-wide text-indigo-300">
+                        Entreprise (client)
+                      </span>
+                      <span className="text-[11px] font-bold uppercase tracking-wide text-indigo-300">
+                        Transitaire (mandataire)
+                      </span>
+                    </div>
+
+                    {/* Names come from Global details — shown read-only for context */}
+                    <div className="grid grid-cols-1 sm:grid-cols-[9rem_1fr_1fr] gap-3 items-center mb-3">
+                      <span className="text-xs font-medium text-slate-400 sm:text-right sm:pr-1">
+                        Nom
+                      </span>
+                      <input
+                        className="input opacity-60 cursor-not-allowed"
+                        value={form.client_name}
+                        readOnly
+                        placeholder="— from Global details"
+                        style={upper}
+                        aria-label="Nom de l'entreprise (from Global details)"
+                      />
+                      <input
+                        className="input opacity-60 cursor-not-allowed"
+                        value={
+                          form.transit_name.trim()
+                            ? `TRANSIT ${form.transit_name
+                                .trim()
+                                .replace(/^\s*transit[\s:,-]+/i, "")}`
+                            : ""
+                        }
+                        readOnly
+                        placeholder="— from Global details"
+                        style={upper}
+                        aria-label="Nom du transitaire (from Global details)"
+                      />
+                    </div>
+
+                    {MANDAT_ROWS.map((row) => (
+                      <div
+                        key={row.label}
+                        className="grid grid-cols-1 sm:grid-cols-[9rem_1fr_1fr] gap-3 items-center mb-3"
+                      >
+                        <span className="text-xs font-medium text-slate-400 sm:text-right sm:pr-1">
+                          {row.label}
+                        </span>
+                        <input
+                          className="input"
+                          type={row.type ?? "text"}
+                          value={form.mandat[row.client]}
+                          onChange={(e) => updateMandat(row.client, e.target.value)}
+                          placeholder={row.placeholder}
+                          aria-label={`${row.label} — entreprise`}
+                        />
+                        <input
+                          className="input"
+                          type={row.type ?? "text"}
+                          value={form.mandat[row.transit]}
+                          onChange={(e) => updateMandat(row.transit, e.target.value)}
+                          placeholder={row.placeholder}
+                          aria-label={`${row.label} — transitaire`}
+                        />
+                      </div>
+                    ))}
+
+                    <p className="mt-4 text-xs text-slate-500">
+                      Blank fields are simply left empty in the letter. The DPO address
+                      in §6 uses the entreprise email.
+                    </p>
+                  </div>
+                )}
+              </section>
             </div>
 
             {/* Actions */}
@@ -1580,7 +1766,8 @@ function App() {
                 <p className="text-xs text-slate-500 mb-3">
                   Every part is optional — complete any one of them to generate: transit
                   documents (names + shipping company + containers + at least one
-                  document type), the DCP declaration, or the tariff annex.
+                  document type), the DCP declaration, the tariff annex, or the
+                  Mandat MSC (transit + client name).
                 </p>
               ) : (
                 <p className="text-xs text-slate-400 mb-3 flex flex-wrap items-center gap-x-1.5 gap-y-1">
@@ -1610,6 +1797,7 @@ function App() {
                   {annexReady && (
                     <span className="doc-pill">1 × ملحق التعريفات الجمركية</span>
                   )}
+                  {mandatReady && <span className="doc-pill">1 × Mandat MSC</span>}
                   <span className="text-slate-500">
                     will be generated ({docCount} document{docCount > 1 ? "s" : ""}, ZIP download)
                   </span>
@@ -1740,6 +1928,9 @@ function App() {
                             <span className="doc-pill !text-[10px]">
                               ملحق ({entry.payload.dcp_produits.length})
                             </span>
+                          )}
+                          {entry.payload.mandat_enabled && (
+                            <span className="doc-pill !text-[10px]">Mandat</span>
                           )}
                         </span>
                       </button>

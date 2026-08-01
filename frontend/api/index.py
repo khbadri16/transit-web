@@ -43,6 +43,14 @@ TPL_MISE_AKKON = "MISE A QUAI L - AKKON.docx"  # AKKON variant — adds BL numbe
 # DCP (تصريح باستيراد المنتوج) is generated as a PDF — see api/dcp_pdf.py
 TPL_ANNEXE = "ANNEXE.docx"              # rendered once (if products present)
 TPL_MANDAT = "MANDAT MSC.docx"          # rendered once (autorisation aux mandataires)
+TPL_FACTURE = "FACTURE TRANSIT.docx"    # rendered once (facture de transit)
+
+# The nine fixed libellés of the facture table, in the order they are printed.
+FACTURE_KEYS = [
+    "echange", "magazinage", "dechargement", "restitution", "surestaries",
+    "ouverture", "honnoraire", "tva", "timbre",
+]
+TVA_RATE = 0.09                         # TVA 9% on OUVERTURE DOSSIER
 
 app = FastAPI(title="Transit Document Generator API", version="2.0.0")
 
@@ -112,6 +120,44 @@ class Mandat(BaseModel):
     transit_phone: str = ""
 
 
+class FactureLigne(BaseModel):
+    """One line of the merchandise table of the FACTURE DE TRANSIT."""
+    marque: str = ""
+    designation: str = ""
+    nbrs: str = ""
+    poids: str = ""          # number only — "KG" is printed by the template
+
+
+class FactureRow(BaseModel):
+    """One line of the invoice table: an amount in either column (or both)."""
+    debours: str = ""
+    produit: str = ""
+    observation: str = ""
+
+
+class FactureExtra(FactureRow):
+    """A line the user added on top of the nine fixed libellés."""
+    libelle: str = ""
+
+
+class Facture(BaseModel):
+    """FACTURE DE TRANSIT — fully independent from the transit part above
+    (its own transit/client identity, never linked)."""
+    transit_name: str = "TRANSIT AOULA"
+    agrement: str = "04048"
+    nif_transit: str = "196919250099510"
+    client_name: str = ""
+    client_adresse: str = ""
+    client_nif: str = ""
+    d10_numero: str = ""
+    d10_date: str = ""
+    ligne: FactureLigne = Field(default_factory=FactureLigne)   # single row
+    lignes: List[FactureLigne] = Field(default_factory=list)    # legacy payloads
+    rows: Dict[str, FactureRow] = Field(default_factory=dict)  # keyed by FACTURE_KEYS
+    extras: List[FactureExtra] = Field(default_factory=list)
+    tva_manual: bool = False   # True once the user overrode the 9% calculation
+
+
 class GenerateRequest(BaseModel):
     # Part 1 — transit documents
     transit_name: str = ""
@@ -135,6 +181,9 @@ class GenerateRequest(BaseModel):
     # Part 4 — Mandat MSC (autorisation aux mandataires)
     mandat_enabled: bool = False
     mandat: Mandat = Field(default_factory=Mandat)
+    # Part 5 — Facture de transit (always a standalone file, never merged)
+    facture_enabled: bool = False
+    facture: Facture = Field(default_factory=Facture)
 
 
 # --------------------------------------------------------------------------
@@ -153,6 +202,93 @@ def sanitize_filename(name: str) -> str:
 def strip_transit_prefix(name: str) -> str:
     """'TRANSIT ALPHA' -> 'ALPHA' (bare in BON/MISE, prefixed in the LETTRE)."""
     return re.sub(r"^\s*transit[\s:,\-]+", "", name or "", flags=re.IGNORECASE).strip()
+
+
+def parse_money(value: str):
+    """'20 000,50' / '20000.50' -> 20000.5 ; anything unusable -> None."""
+    txt = (value or "").strip().replace(" ", "").replace(" ", "")
+    if not txt:
+        return None
+    txt = txt.replace(",", ".")
+    try:
+        return float(txt)
+    except ValueError:
+        return None
+
+
+def money(value: str) -> str:
+    """Print an amount with 2 decimals; free text is passed through as typed."""
+    n = parse_money(value)
+    return f"{n:.2f}" if n is not None else (value or "").strip()
+
+
+def build_facture_context(f: "Facture") -> dict:
+    """Header + both tables + the three computed totals.
+
+    Rules (confirmed with the user):
+      * TVA 9% = 9% of OUVERTURE DOSSIER, taken from whichever column it was
+        typed in (debours + produit), printed in the PRODUIT column, and
+        overridable by hand (tva_manual).
+      * TAUX debours / TAUX produit = the sum of their column, extras included.
+      * TOTAL TTC = TAUX debours + TAUX produit.
+    """
+    rows = {k: f.rows.get(k) or FactureRow() for k in FACTURE_KEYS}
+    ligne = f.ligne
+    if not any((ligne.marque, ligne.designation, ligne.nbrs, ligne.poids)):
+        ligne = f.lignes[0] if f.lignes else FactureLigne()   # legacy payloads
+    extras = [e for e in f.extras if (e.libelle or "").strip() or
+              (e.debours or "").strip() or (e.produit or "").strip() or
+              (e.observation or "").strip()]
+
+    # --- TVA 9% ------------------------------------------------------------
+    if f.tva_manual:
+        tva_txt = money(rows["tva"].produit)
+    else:
+        base = (parse_money(rows["ouverture"].produit) or 0.0) + \
+               (parse_money(rows["ouverture"].debours) or 0.0)
+        tva_txt = f"{base * TVA_RATE:.2f}" if base else ""
+        rows["tva"] = rows["tva"].model_copy(update={"produit": tva_txt})
+
+    # --- totals ------------------------------------------------------------
+    def column_total(attr: str) -> str:
+        cells = [getattr(rows[k], attr) for k in FACTURE_KEYS]
+        cells += [getattr(e, attr) for e in extras]
+        values = [parse_money(c) for c in cells]
+        total = sum(v for v in values if v is not None)
+        return f"{total:.2f}" if any(v is not None for v in values) else ""
+
+    taux_debours, taux_produit = column_total("debours"), column_total("produit")
+    grand = (parse_money(taux_debours) or 0.0) + (parse_money(taux_produit) or 0.0)
+
+    ctx = {
+        "transit_name": f.transit_name.strip(),
+        "agrement": f.agrement.strip(),
+        "nif_transit": f.nif_transit.strip(),
+        "client_name": f.client_name.strip(),
+        "client_adresse": f.client_adresse.strip(),
+        "client_nif": f.client_nif.strip(),
+        "d10_numero": f.d10_numero.strip(),
+        "d10_date": f.d10_date.strip(),
+        # the merchandise table is a single line — always printed, even empty
+        "lignes": [
+            {"marque": ligne.marque.strip(),
+             "designation": ligne.designation.strip(),
+             "nbrs": ligne.nbrs.strip(), "poids": money(ligne.poids)}
+        ],
+        "extras": [
+            {"libelle": e.libelle.strip().upper(), "debours": money(e.debours),
+             "produit": money(e.produit), "observation": e.observation.strip()}
+            for e in extras
+        ],
+        "taux_debours": taux_debours,
+        "taux_produit": taux_produit,
+        "total_ttc": f"{grand:.2f}" if (taux_debours or taux_produit) else "",
+    }
+    for k in FACTURE_KEYS:
+        ctx[f"deb_{k}"] = money(rows[k].debours)
+        ctx[f"pro_{k}"] = money(rows[k].produit)
+        ctx[f"obs_{k}"] = rows[k].observation.strip()
+    return ctx
 
 
 def render_to_bytes(template_name: str, context: dict) -> bytes:
@@ -532,12 +668,19 @@ def generate(req: GenerateRequest) -> StreamingResponse:
         and bool(req.transit_name.strip())
     )
 
-    if not (transit_ready or dcp_ready or annex_ready or mandat_ready):
+    # The Facture is fully independent — it carries its own client identity.
+    facture_ready = (
+        req.facture_enabled and bool(req.facture.client_name.strip())
+    )
+
+    if not (transit_ready or dcp_ready or annex_ready or mandat_ready
+            or facture_ready):
         raise HTTPException(
             status_code=400,
             detail="Nothing to generate: complete at least one part — transit "
                    "documents (names + containers), the DCP declaration, the "
-                   "tariff annex, or the Mandat MSC (client + transit name).",
+                   "tariff annex, the Mandat MSC (client + transit name), or "
+                   "the Facture (client name).",
         )
 
     # --- Render everything into an in-memory ZIP ---------------------------
@@ -687,6 +830,15 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                     }),
                 )
 
+            # PART 5 — Facture de transit. Standalone by design: it has its own
+            # transit/client identity and never joins the merged Word file.
+            if facture_ready:
+                zf.writestr(
+                    "FACTURE_TRANSIT_GENERATED.docx",
+                    render_to_bytes(TPL_FACTURE,
+                                    build_facture_context(req.facture)),
+                )
+
     except HTTPException:
         raise
     except Exception as exc:  # docxtpl/jinja render errors -> readable 500
@@ -706,25 +858,37 @@ def generate(req: GenerateRequest) -> StreamingResponse:
     )
 
 
+def _ai_error_detail(exc: Exception) -> str:
+    """Never leak a raw model/API error to the UI — always a short Arabic
+    sentence. The real error goes to the server log."""
+    try:
+        from api.gemini_tariff import friendly_error
+
+        return friendly_error(exc)
+    except Exception:                       # gemini module itself unavailable
+        print(f"[tariff] error: {type(exc).__name__}: {exc}", flush=True)
+        return "تعذّر إتمام التصنيف. أعد المحاولة بعد قليل."
+
+
 @app.post("/api/classify-tariff")
 async def classify_tariff(
     invoice: UploadFile = File(...),
     mode: str = Form("pro"),
 ):
-    """Extract products + HS codes from an invoice image using Gemini AI."""
+    """Extract products + HS codes from an invoice image or PDF using Gemini."""
 
     # --- validation --------------------------------------------------------
     mime_type = invoice.content_type or "application/octet-stream"
-    allowed = {"image/jpeg", "image/png", "image/webp"}
+    allowed = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
     if mime_type not in allowed:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type ({mime_type}). Allowed: JPEG, PNG, WebP.",
+            detail="صيغة غير مدعومة. الصيغ المقبولة: JPEG, PNG, WebP, PDF",
         )
 
-    image_bytes = await invoice.read()
-    if len(image_bytes) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="File too large (max 10 MB).")
+    file_bytes = await invoice.read()
+    if len(file_bytes) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="حجم الملف يتجاوز 20MB.")
 
     if mode not in ("pro", "normal"):
         mode = "pro"
@@ -733,11 +897,39 @@ async def classify_tariff(
     try:
         from api.gemini_tariff import classify_invoice
 
-        result = classify_invoice(image_bytes, mime_type, mode)
-        return result
+        return classify_invoice(file_bytes, mime_type, mode)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as exc:
+        raise HTTPException(status_code=503, detail=_ai_error_detail(exc))
+
+
+class ProductsIn(BaseModel):
+    """Hand-typed product names sent from the annex table."""
+
+    products: List[str] = []
+    mode: str = "pro"
+
+
+@app.post("/api/classify-products")
+async def classify_products_endpoint(payload: ProductsIn):
+    """Classify products the agent typed by hand (no invoice image)."""
+
+    names = [p.strip() for p in (payload.products or []) if p and p.strip()]
+    if not names:
+        raise HTTPException(status_code=400, detail="لا توجد منتوجات للإرسال.")
+    if len(names) > 40:
         raise HTTPException(
-            status_code=500, detail=f"Classification failed: {exc}"
+            status_code=400, detail="عدد المنتوجات كبير جداً (الحد 40 في المرة)."
         )
+
+    mode = payload.mode if payload.mode in ("pro", "normal") else "pro"
+
+    try:
+        from api.gemini_tariff import classify_products
+
+        return classify_products(names, mode)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=_ai_error_detail(exc))

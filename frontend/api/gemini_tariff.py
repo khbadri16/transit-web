@@ -61,10 +61,59 @@ def _quota_error(exc: Exception) -> bool:
     return "429" in msg or "RESOURCE_EXHAUSTED" in msg
 
 
-def _extract_products(client, model: str, image_bytes: bytes, mime_type: str):
-    """Step 1 — vision extraction. Returns [{product, designation_fr}, ...]."""
+def _overload_error(exc: Exception) -> bool:
+    """Google returns 503 UNAVAILABLE / "model is overloaded" when demand on
+    the model is high. It is transient — the user just has to retry."""
+    msg = str(exc).lower()
+    return "503" in msg or "unavailable" in msg or "overloaded" in msg
+
+
+def _retryable(exc: Exception) -> bool:
+    return _quota_error(exc) or _overload_error(exc)
+
+
+# ---- user-facing messages (plain Arabic, never raw API text) --------------
+MSG_QUOTA = "تم استنفاد حصة النموذج لهذا اليوم. حاول لاحقاً أو استعمل الوضع السريع."
+MSG_BUSY = "الخدمة مشغولة حالياً بسبب كثرة الطلبات. أعد المحاولة بعد دقيقة."
+MSG_GENERIC = "تعذّر إتمام التصنيف. أعد المحاولة بعد قليل."
+
+
+def friendly_error(exc: Exception) -> str:
+    """Turn any model/API exception into a short Arabic sentence for the UI.
+    The raw error is only written to the server log."""
+    _log(f"error: {type(exc).__name__}: {str(exc)[:300]}")
+    if _quota_error(exc):
+        return MSG_QUOTA
+    if _overload_error(exc):
+        return MSG_BUSY
+    return MSG_GENERIC
+
+
+_PRODUCTS_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "products": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "product": {"type": "STRING"},
+                    "designation_fr": {"type": "STRING"},
+                },
+                "required": ["product", "designation_fr"],
+            },
+        }
+    },
+    "required": ["products"],
+}
+
+
+def _extract_products(client, model: str, file_bytes: bytes, mime_type: str):
+    """Step 1 — vision extraction from an invoice image or PDF.
+    Returns [{product, designation_fr}, ...]."""
     prompt = (
-        "Extract every physical line-item product from this invoice.\n"
+        "Extract every physical line-item product from this invoice "
+        "(it may be an image or a multi-page PDF — read every page).\n"
         "For each item return:\n"
         '- "product": the item name/description exactly as written on the invoice.\n'
         '- "designation_fr": a concise French description of what the product IS, '
@@ -74,39 +123,69 @@ def _extract_products(client, model: str, image_bytes: bytes, mime_type: str):
         "Rules: only actual goods line-items — skip totals, fees, shipping, "
         "discounts, taxes, and section headers."
     )
-    schema = {
-        "type": "OBJECT",
-        "properties": {
-            "products": {
-                "type": "ARRAY",
-                "items": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "product": {"type": "STRING"},
-                        "designation_fr": {"type": "STRING"},
-                    },
-                    "required": ["product", "designation_fr"],
-                },
-            }
-        },
-        "required": ["products"],
-    }
     t0 = time.time()
     response = client.models.generate_content(
         model=model,
-        contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)],
+        contents=[prompt, types.Part.from_bytes(data=file_bytes, mime_type=mime_type)],
         config=types.GenerateContentConfig(
             temperature=0,
             response_mime_type="application/json",
-            response_schema=schema,
+            response_schema=_PRODUCTS_SCHEMA,
             thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
-    _log(f"step1 extract ({model}) took {time.time() - t0:.2f}s")
+    _log(f"step1 extract ({model}, {mime_type}) took {time.time() - t0:.2f}s")
     try:
         return json.loads(response.text).get("products", [])
     except json.JSONDecodeError:
         return []
+
+
+def _normalize_products(client, model: str, names):
+    """Step 1 (text variant) — the agent typed the product names by hand, so
+    there is nothing to read from an image: just normalize each name into a
+    French tariff-style description. Returns [{product, designation_fr}, ...]
+    in the SAME ORDER as `names`."""
+    fallback = [{"product": n, "designation_fr": n} for n in names]
+    prompt = (
+        "Voici des produits saisis à la main par un agent de transit "
+        "(français, arabe, anglais, abréviations ou fautes de frappe "
+        "possibles).\n"
+        "Pour chaque produit renvoie :\n"
+        '- "product" : le texte saisi, inchangé.\n'
+        '- "designation_fr" : une description française concise de ce QU\'EST '
+        "le produit, en vocabulaire douanier (traduis si nécessaire, "
+        "développe les abréviations, précise la matière ou la fonction, ex. "
+        '"brosse à cheveux en plastique", "climatiseur split system 12000 '
+        'BTU").\n'
+        "Garde exactement le même ordre et le même nombre d'éléments.\n\n"
+        + "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
+    )
+    t0 = time.time()
+    response = client.models.generate_content(
+        model=model,
+        contents=[prompt],
+        config=types.GenerateContentConfig(
+            temperature=0,
+            response_mime_type="application/json",
+            response_schema=_PRODUCTS_SCHEMA,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
+    )
+    _log(f"step1 normalize ({model}) took {time.time() - t0:.2f}s "
+         f"for {len(names)} typed products")
+    try:
+        out = json.loads(response.text).get("products", [])
+    except json.JSONDecodeError:
+        return fallback
+    if len(out) != len(names):          # never let the rows drift out of sync
+        _log(f"normalize returned {len(out)}/{len(names)} items -> using raw names")
+        return fallback
+    # keep the agent's own wording as `product`, whatever the model echoed back
+    return [
+        {"product": n, "designation_fr": (out[i].get("designation_fr") or n).strip()}
+        for i, n in enumerate(names)
+    ]
 
 
 def _pick_codes(client, model: str, items):
@@ -199,28 +278,47 @@ def _residual_of_family(index, prefix: str) -> str:
     return ""
 
 
-def classify_invoice(image_bytes: bytes, mime_type: str, mode: str) -> dict:
-    t_start = time.time()
+def _model_pro() -> str:
+    return os.environ.get("GEMINI_MODEL_PRO", "gemini-3.1-pro-preview")
+
+
+def _model_normal() -> str:
+    return os.environ.get("GEMINI_MODEL_NORMAL", "gemini-3.5-flash")
+
+
+def _setup():
+    """Client + tariff index + optional Redis, shared by both entry points."""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("Missing GEMINI_API_KEY environment variable")
-    model_pro = os.environ.get("GEMINI_MODEL_PRO", "gemini-3.1-pro-preview")
-    model_normal = os.environ.get("GEMINI_MODEL_NORMAL", "gemini-3.5-flash")
-
     client = genai.Client(api_key=api_key)
-    redis_client = _get_redis()
     index = get_index()
     _log(f"index ready: {index.n} codes")
+    return client, index, _get_redis()
 
-    # ---- Step 1: extract products from the invoice image (always flash) ----
+
+def _pick_with_fallback(client, items, mode):
+    """Step 2 with an automatic pro -> flash fallback when the pro model is
+    out of quota or overloaded. Any remaining failure is raised as a ValueError
+    carrying a plain Arabic message."""
+    model2 = _model_pro() if mode == "pro" else _model_normal()
     try:
-        extracted = _extract_products(client, model_normal, image_bytes, mime_type)
+        return _pick_codes(client, model2, items)
     except Exception as exc:
-        if _quota_error(exc):
-            raise ValueError("تم استنفاد حصة النموذج. حاول لاحقاً.")
-        raise
-    if not extracted:
-        return {"products": []}
+        if _retryable(exc) and model2 != _model_normal():
+            _log("pro model unavailable (quota/overload) -> falling back to flash")
+            try:
+                return _pick_codes(client, _model_normal(), items)
+            except Exception as exc2:
+                raise ValueError(friendly_error(exc2)) from exc2
+        raise ValueError(friendly_error(exc)) from exc
+
+
+def _classify_core(client, index, redis_client, extracted, mode, t_start) -> dict:
+    """Shared tail of both entry points: Redis cache -> local candidate
+    retrieval -> model choice -> guaranteed-valid national code.
+    `extracted` is [{product, designation_fr}, ...]; the returned products
+    keep exactly the same order."""
 
     # ---- Redis result cache ------------------------------------------------
     results = [None] * len(extracted)
@@ -257,22 +355,7 @@ def classify_invoice(image_bytes: bytes, mime_type: str, mode: str) -> dict:
                 "candidates": index.top_candidates(query, k=12),
             })
 
-        model2 = model_pro if mode == "pro" else model_normal
-        try:
-            picked = _pick_codes(client, model2, items)
-        except Exception as exc:
-            if _quota_error(exc) and model2 != model_normal:
-                _log("pro quota exhausted -> falling back to flash for step 2")
-                try:
-                    picked = _pick_codes(client, model_normal, items)
-                except Exception as exc2:
-                    if _quota_error(exc2):
-                        raise ValueError("تم استنفاد حصة النموذجين. حاول لاحقاً.")
-                    raise
-            elif _quota_error(exc):
-                raise ValueError("تم استنفاد حصة النموذج. حاول لاحقاً.")
-            else:
-                raise
+        picked = _pick_with_fallback(client, items, mode)
 
         valid_codes = {e["code"] for e in index.entries}
         by_code = {c["code"]: c for it in items for c in it["candidates"]}
@@ -316,7 +399,51 @@ def classify_invoice(image_bytes: bytes, mime_type: str, mode: str) -> dict:
                     pass
 
     products = [r for r in results if r]
+    for i, p in enumerate(products):
+        p["i"] = i                       # row index, so callers can map back
     n_coded = sum(1 for p in products if p.get("codeHS"))
     _log(f"result: {len(products)} products, {n_coded} coded, "
          f"total {time.time() - t_start:.2f}s")
     return {"products": products}
+
+
+# ---- public entry points --------------------------------------------------
+
+def classify_invoice(file_bytes: bytes, mime_type: str, mode: str) -> dict:
+    """Invoice image OR PDF -> products + HS codes."""
+    t_start = time.time()
+    client, index, redis_client = _setup()
+
+    # Step 1: read the invoice (always flash — extraction is cheap)
+    try:
+        extracted = _extract_products(client, _model_normal(), file_bytes, mime_type)
+    except Exception as exc:
+        raise ValueError(friendly_error(exc)) from exc
+    if not extracted:
+        return {"products": []}
+
+    return _classify_core(client, index, redis_client, extracted, mode, t_start)
+
+
+def classify_products(names, mode: str) -> dict:
+    """Hand-typed product names -> the same products + HS codes, in order.
+    Used when the invoice has only a few lines and the agent would rather
+    type them than photograph the invoice."""
+    t_start = time.time()
+    names = [str(n).strip() for n in names if str(n).strip()]
+    if not names:
+        return {"products": []}
+
+    client, index, redis_client = _setup()
+
+    # Step 1 (text): normalize the typed names — never fatal, falls back to
+    # the raw text so a flaky model can't block the classification.
+    try:
+        extracted = _normalize_products(client, _model_normal(), names)
+    except Exception as exc:
+        if _retryable(exc):
+            raise ValueError(friendly_error(exc)) from exc
+        _log(f"normalize failed ({exc}) -> using raw typed names")
+        extracted = [{"product": n, "designation_fr": n} for n in names]
+
+    return _classify_core(client, index, redis_client, extracted, mode, t_start)

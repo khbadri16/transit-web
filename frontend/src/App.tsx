@@ -25,6 +25,8 @@ import {
   RotateCcw,
   Zap,
   Brain,
+  Send,
+  Receipt,
 } from "lucide-react";
 
 /* --------------------------------------------------------------------------
@@ -69,6 +71,69 @@ type GeneratePayload = {
   /* Mandat MSC — client_name / transit_name are reused from the fields above */
   mandat_enabled: boolean;
   mandat: MandatFields;
+  /* Facture de transit — completely independent from everything above */
+  facture_enabled: boolean;
+  facture: FacturePayload;
+};
+
+/* ---- Facture de transit -------------------------------------------------- */
+
+/** The single merchandise line (POID BRUT is typed without "KG"). */
+type FactureLigne = {
+  marque: string;
+  designation: string;
+  nbrs: string;
+  poids: string;
+};
+
+/** One line of the invoice table. */
+type FactureRow = {
+  debours: string;
+  produit: string;
+  observation: string;
+};
+
+/** A line the user adds on top of the nine fixed libellés. */
+type FactureExtra = FactureRow & { id: string; libelle: string };
+
+/** The nine fixed libellés, in printing order. */
+const FACTURE_KEYS = [
+  "echange", "magazinage", "dechargement", "restitution", "surestaries",
+  "ouverture", "honnoraire", "tva", "timbre",
+] as const;
+type FactureKey = (typeof FACTURE_KEYS)[number];
+
+const FACTURE_LABELS: Record<FactureKey, string> = {
+  echange: "ECHANGE",
+  magazinage: "MAGAZINAGE",
+  dechargement: "DECHARGEMENT",
+  restitution: "RESTITUSION TC",
+  surestaries: "SURESTARIES",
+  ouverture: "OUVERTURE DOSSIER",
+  honnoraire: "HONNORAIRE",
+  tva: "TVA 9%",
+  timbre: "TIMBRE",
+};
+
+type FactureFields = {
+  transit_name: string;
+  agrement: string;
+  nif_transit: string;
+  client_name: string;
+  client_adresse: string;
+  client_nif: string;
+  d10_numero: string;
+  d10_date: string;
+  ligne: FactureLigne;
+  rows: Record<FactureKey, FactureRow>;
+  extras: FactureExtra[];
+  /** True once the user typed over the automatic TVA. */
+  tva_manual: boolean;
+};
+
+/** What is POSTed for the facture (ids dropped, rows keyed like the backend). */
+type FacturePayload = Omit<FactureFields, "extras"> & {
+  extras: { libelle: string; debours: string; produit: string; observation: string }[];
 };
 
 /** Contact block of the Mandat MSC letter (both columns of its table). */
@@ -312,6 +377,77 @@ const MANDAT_ROWS: {
   { label: "Téléphone", client: "client_phone", transit: "transit_phone", type: "tel", placeholder: "e.g. +213 21 00 00 00" },
 ];
 
+/* ---- Facture defaults + money helpers ------------------------------------ */
+
+const emptyFactureRow = (): FactureRow => ({
+  debours: "",
+  produit: "",
+  observation: "",
+});
+
+const initialFactureRows = (): Record<FactureKey, FactureRow> => {
+  const rows = {} as Record<FactureKey, FactureRow>;
+  for (const k of FACTURE_KEYS) rows[k] = emptyFactureRow();
+  // Pre-filled but editable, exactly like the paper invoice.
+  rows.ouverture.produit = "20000.00";
+  rows.timbre.produit = "436.00";
+  return rows;
+};
+
+const initialFacture = (): FactureFields => ({
+  transit_name: "TRANSIT AOULA",
+  agrement: "04048",
+  nif_transit: "196919250099510",
+  client_name: "",
+  client_adresse: "",
+  client_nif: "",
+  d10_numero: "",
+  d10_date: "",
+  ligne: { marque: "", designation: "", nbrs: "", poids: "" },
+  rows: initialFactureRows(),
+  extras: [],
+  tva_manual: false,
+});
+
+const TVA_RATE = 0.09;
+
+/** "20 000,50" -> 20000.5 ; unusable text -> null. */
+const parseMoney = (value: string): number | null => {
+  const txt = (value || "").replace(/[\s ]/g, "").replace(",", ".");
+  if (!txt) return null;
+  const n = Number(txt);
+  return Number.isFinite(n) ? n : null;
+};
+
+const money2 = (n: number) => n.toFixed(2);
+
+/** dd/mm/yyyy mask — the user types digits only, the slashes appear alone. */
+const maskDate = (value: string) => {
+  const d = value.replace(/\D/g, "").slice(0, 8);
+  if (d.length <= 2) return d;
+  if (d.length <= 4) return `${d.slice(0, 2)}/${d.slice(2)}`;
+  return `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}`;
+};
+
+/** History entries hold the POSTed shape — rebuild the editable one (ids). */
+const restoreFacture = (p?: FacturePayload): FactureFields => {
+  const base = initialFacture();
+  if (!p) return base;
+  const rows = initialFactureRows();
+  for (const k of FACTURE_KEYS) {
+    rows[k] = { ...emptyFactureRow(), ...(p.rows?.[k] ?? {}) };
+  }
+  // history entries saved before the merchandise table became a single line
+  const legacy = (p as { lignes?: FactureLigne[] }).lignes?.[0];
+  return {
+    ...base,
+    ...p,
+    rows,
+    ligne: { ...base.ligne, ...(p.ligne ?? legacy ?? {}) },
+    extras: (p.extras ?? []).map((e) => ({ id: crypto.randomUUID(), ...e })),
+  };
+};
+
 const sanitizeForFilename = (s: string) =>
   s.trim().replace(/[\\/:*?"<>|]+/g, "_").replace(/\s+/g, "_") || "DOCUMENTS";
 
@@ -338,6 +474,8 @@ type FormState = {
   dcp_produits: DcpProduit[];
   mandat_enabled: boolean;
   mandat: MandatFields;
+  facture_enabled: boolean;
+  facture: FactureFields;
 };
 
 const initialForm: FormState = {
@@ -359,6 +497,8 @@ const initialForm: FormState = {
   dcp_produits: [],
   mandat_enabled: false,
   mandat: { ...initialMandat },
+  facture_enabled: false,
+  facture: initialFacture(),
 };
 
 function App() {
@@ -366,6 +506,7 @@ function App() {
     ...initialForm,
     dcp: { ...initialDcp },
     mandat: { ...initialMandat },
+    facture: initialFacture(),
   });
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
   const [historyOpen, setHistoryOpen] = useState(false); // mobile drawer
@@ -387,6 +528,8 @@ function App() {
   const [classifyMode, setClassifyMode] = useState<"pro" | "normal">("pro");
   const [isClassifying, setIsClassifying] = useState(false);
   const [classifyError, setClassifyError] = useState<string | null>(null);
+  /** Sending hand-typed products (rows with an empty Code HS) to the AI. */
+  const [isSendingProducts, setIsSendingProducts] = useState(false);
 
   const counts = useMemo(() => {
     const c = { "20": 0, "40": 0, "45": 0 } as Record<Size, number>;
@@ -415,13 +558,55 @@ function App() {
   const annexReady = form.dcp_produits.some(
     (p) => p.produit.trim() !== "" || p.code.trim() !== ""
   );
+  /** Typed products still waiting for a Code HS — what the Send button sends. */
+  const pendingProductCount = form.dcp_produits.filter(
+    (p) => p.produit.trim() !== "" && p.code.trim() === ""
+  ).length;
+
+  /* ---- Facture: live TVA + totals (same rules as the backend) ------------ */
+  const facture = form.facture;
+  const factureCalc = useMemo(() => {
+    const { rows, extras, tva_manual } = facture;
+
+    // TVA 9% of OUVERTURE DOSSIER — taken from whichever column it was typed
+    // in, printed in PRODUIT, overridable by hand.
+    const base =
+      (parseMoney(rows.ouverture.produit) ?? 0) +
+      (parseMoney(rows.ouverture.debours) ?? 0);
+    const tvaAuto = base ? money2(base * TVA_RATE) : "";
+    const tvaValue = tva_manual ? rows.tva.produit : tvaAuto;
+
+    const columnTotal = (field: "debours" | "produit") => {
+      const cells = FACTURE_KEYS.map((k) =>
+        k === "tva" && field === "produit" ? tvaValue : rows[k][field]
+      ).concat(extras.map((e) => e[field]));
+      const values = cells.map(parseMoney);
+      const sum = values.reduce<number>((a, v) => a + (v ?? 0), 0);
+      return values.some((v) => v !== null) ? money2(sum) : "";
+    };
+
+    const tauxDebours = columnTotal("debours");
+    const tauxProduit = columnTotal("produit");
+    const total = (parseMoney(tauxDebours) ?? 0) + (parseMoney(tauxProduit) ?? 0);
+    return {
+      tvaAuto,
+      tvaValue,
+      tauxDebours,
+      tauxProduit,
+      totalTtc: tauxDebours || tauxProduit ? money2(total) : "",
+    };
+  }, [facture]);
+
+  const factureReady =
+    form.facture_enabled && form.facture.client_name.trim() !== "";
   /* The Mandat reuses the two names from Global details — nothing else from
      the transit part, so it can be generated without any container. */
   const mandatReady =
     form.mandat_enabled &&
     form.transit_name.trim() !== "" &&
     form.client_name.trim() !== "";
-  const canGenerate = transitReady || dcpReady || annexReady || mandatReady;
+  const canGenerate =
+    transitReady || dcpReady || annexReady || mandatReady || factureReady;
   const docCount =
     (transitReady
       ? (form.doc_mise ? counts.total : 0) +
@@ -431,7 +616,8 @@ function App() {
       : 0) +
     (dcpReady ? 1 : 0) +
     (annexReady ? 1 : 0) +
-    (mandatReady ? 1 : 0);
+    (mandatReady ? 1 : 0) +
+    (factureReady ? 1 : 0);
 
   /** The live DCP paper: available on large screens while DCP is enabled. */
   const paperAvailable = form.dcp_enabled;
@@ -473,6 +659,69 @@ function App() {
   const updateMandat = (key: keyof MandatFields, value: string) => {
     setForm((prev) => ({ ...prev, mandat: { ...prev.mandat, [key]: value } }));
   };
+
+  /* --- Facture de transit ------------------------------------------------- */
+
+  const updateFacture = <K extends keyof FactureFields>(
+    key: K,
+    value: FactureFields[K]
+  ) => {
+    setForm((prev) => ({ ...prev, facture: { ...prev.facture, [key]: value } }));
+  };
+
+  const updateFactureRow = (
+    key: FactureKey,
+    field: keyof FactureRow,
+    value: string
+  ) => {
+    setForm((prev) => ({
+      ...prev,
+      facture: {
+        ...prev.facture,
+        // typing in the TVA amount switches it to manual for good
+        tva_manual:
+          key === "tva" && field === "produit" ? true : prev.facture.tva_manual,
+        rows: {
+          ...prev.facture.rows,
+          [key]: { ...prev.facture.rows[key], [field]: value },
+        },
+      },
+    }));
+  };
+
+  /** Give the TVA back to the automatic 9% calculation. */
+  const resetTva = () => {
+    setForm((prev) => ({
+      ...prev,
+      facture: {
+        ...prev.facture,
+        tva_manual: false,
+        rows: { ...prev.facture.rows, tva: { ...prev.facture.rows.tva, produit: "" } },
+      },
+    }));
+  };
+
+  const updateFactureLigne = (field: keyof FactureLigne, value: string) =>
+    updateFacture("ligne", { ...form.facture.ligne, [field]: value });
+
+  const addFactureExtra = () =>
+    updateFacture("extras", [
+      ...form.facture.extras,
+      { id: crypto.randomUUID(), libelle: "", debours: "", produit: "", observation: "" },
+    ]);
+
+  const removeFactureExtra = (id: string) =>
+    updateFacture("extras", form.facture.extras.filter((e) => e.id !== id));
+
+  const updateFactureExtra = (
+    id: string,
+    field: keyof Omit<FactureExtra, "id">,
+    value: string
+  ) =>
+    updateFacture(
+      "extras",
+      form.facture.extras.map((e) => (e.id === id ? { ...e, [field]: value } : e))
+    );
 
   /* Annex products (ملحق التعريفات الجمركية) */
   const addProduit = () => {
@@ -606,21 +855,28 @@ function App() {
       setInvoicePreview(null);
       return;
     }
-    // Validate type
-    const allowed = ["image/jpeg", "image/png", "image/webp"];
+    // Validate type — images and PDF invoices are both accepted
+    const allowed = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "application/pdf",
+    ];
     if (!allowed.includes(file.type)) {
-      setClassifyError("صيغة غير مدعومة. الصيغ المقبولة: JPEG, PNG, WebP");
+      setClassifyError("صيغة غير مدعومة. الصيغ المقبولة: JPEG, PNG, WebP, PDF");
       return;
     }
-    // Validate size (10MB)
-    if (file.size > 10 * 1024 * 1024) {
-      setClassifyError("حجم الملف يتجاوز 10MB");
+    // Validate size (20MB — a scanned PDF is heavier than a photo)
+    if (file.size > 20 * 1024 * 1024) {
+      setClassifyError("حجم الملف يتجاوز 20MB");
       return;
     }
+    if (invoicePreview) URL.revokeObjectURL(invoicePreview);
     setInvoiceFile(file);
-    // Create preview URL
-    const url = URL.createObjectURL(file);
-    setInvoicePreview(url);
+    // Thumbnail for images only; PDFs show a file icon instead.
+    setInvoicePreview(
+      file.type === "application/pdf" ? null : URL.createObjectURL(file)
+    );
   };
 
   const handleInvoiceDrop = (e: React.DragEvent) => {
@@ -707,12 +963,106 @@ function App() {
     }
   };
 
+  /* Send the hand-typed products (rows still without a Code HS) to the AI and
+     fill their codes in place — for invoices with only a few lines, where
+     typing is faster than photographing the invoice. */
+  const sendTypedProducts = async () => {
+    if (isSendingProducts || isClassifying) return;
+    const pending = form.dcp_produits.filter(
+      (p) => p.produit.trim() !== "" && p.code.trim() === ""
+    );
+    if (pending.length === 0) return;
+
+    setIsSendingProducts(true);
+    setClassifyError(null);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 305000);
+
+    try {
+      const res = await fetch(`${API_URL}/api/classify-products`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          products: pending.map((p) => p.produit.trim()),
+          mode: classifyMode,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        let message = `خطأ في الخادم (HTTP ${res.status})`;
+        try {
+          const data = await res.json();
+          if (data?.detail) {
+            message =
+              typeof data.detail === "string"
+                ? data.detail
+                : JSON.stringify(data.detail);
+          }
+        } catch { /* non-JSON error body */ }
+        throw new Error(message);
+      }
+
+      const data = await res.json();
+      const results: {
+        i?: number;
+        codeHS?: string;
+        confidence?: "high" | "low";
+        candidates?: { code: string; label: string }[];
+      }[] = data.products || [];
+
+      /* Map results back onto the exact rows we sent, by position. */
+      const byId = new Map<string, (typeof results)[number]>();
+      results.forEach((r, idx) => {
+        const row = pending[typeof r.i === "number" ? r.i : idx];
+        if (row) byId.set(row.id, r);
+      });
+
+      let filled = 0;
+      setForm((prev) => ({
+        ...prev,
+        dcp_produits: prev.dcp_produits.map((p) => {
+          const r = byId.get(p.id);
+          if (!r || !r.codeHS || p.code.trim() !== "") return p;
+          filled++;
+          return {
+            ...p,
+            code: r.codeHS.trim(),
+            aiConfidence: r.confidence,
+            aiCandidates: r.candidates?.length ? r.candidates : undefined,
+          };
+        }),
+      }));
+
+      if (filled === 0) {
+        throw new Error("لم يتم إيجاد أي رمز تعريفي. أعد صياغة أسماء المنتوجات.");
+      }
+      flash(`تم تصنيف ${filled} منتوج بنجاح.`, "success");
+    } catch (err) {
+      const message =
+        err instanceof DOMException && err.name === "AbortError"
+          ? "انتهت مهلة الطلب (5 دقائق). حاول مرة أخرى."
+          : err instanceof TypeError
+            ? "تعذر الاتصال بالخادم. تأكد من تشغيل الخادم المحلي."
+            : err instanceof Error
+              ? err.message
+              : "حدث خطأ غير متوقع.";
+      setClassifyError(message);
+      flash("فشل تصنيف المنتوجات.", "error");
+    } finally {
+      clearTimeout(timeout);
+      setIsSendingProducts(false);
+    }
+  };
+
   const clearForm = () => {
     setForm({
       ...initialForm,
       dcp: { ...initialDcp },
       dcp_produits: [],
       mandat: { ...initialMandat },
+      facture: initialFacture(),
     });
     setError(null);
     setKbField(null);
@@ -720,6 +1070,7 @@ function App() {
     removeInvoice();
     setClassifyError(null);
     setIsClassifying(false);
+    setIsSendingProducts(false);
   };
 
 
@@ -771,6 +1122,8 @@ function App() {
       })),
       mandat_enabled: p.mandat_enabled ?? false,
       mandat: { ...initialMandat, ...(p.mandat ?? {}) },
+      facture_enabled: p.facture_enabled ?? false,
+      facture: restoreFacture(p.facture),
     });
     setHistoryOpen(false);
     setError(null);
@@ -823,6 +1176,16 @@ function App() {
       })),
       mandat_enabled: form.mandat_enabled,
       mandat: { ...form.mandat },
+      facture_enabled: form.facture_enabled,
+      facture: {
+        ...form.facture,
+        // send the TVA exactly as displayed (auto or overridden)
+        rows: {
+          ...form.facture.rows,
+          tva: { ...form.facture.rows.tva, produit: factureCalc.tvaValue },
+        },
+        extras: form.facture.extras.map(({ id: _id, ...e }) => e),
+      },
     };
 
     try {
@@ -853,7 +1216,11 @@ function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
-      const base = payload.client_name || payload.dcp["المستورد"] || "DOCUMENTS";
+      const base =
+        payload.client_name ||
+        payload.dcp["المستورد"] ||
+        payload.facture.client_name ||
+        "DOCUMENTS";
       a.href = url;
       a.download = `DOCUMENTS_${sanitizeForFilename(base)}_${stamp}.zip`;
       document.body.appendChild(a);
@@ -1044,6 +1411,10 @@ function App() {
             )}
 
             <div className="space-y-5 sm:space-y-6 flex-1">
+              {/* ── Preparation ─────────────────────────────────────────── */}
+              <fieldset className="group-box">
+                <legend className="group-title">Preparation</legend>
+                <div className="group-body">
               {/* Global details */}
               <section className="card">
                 <h2 className="section-title">Global details</h2>
@@ -1341,7 +1712,13 @@ function App() {
                   )}
                 </div>
               </section>
+                </div>
+              </fieldset>
 
+              {/* ── DCP ─────────────────────────────────────────────────── */}
+              <fieldset className="group-box">
+                <legend className="group-title">DCP</legend>
+                <div className="group-body">
               {/* DCP — تصريح باستيراد منتوج */}
               <section className="card" dir="rtl">
                 <label className="flex items-center gap-3 cursor-pointer select-none">
@@ -1466,25 +1843,29 @@ function App() {
                     >
                       <Upload size={28} className="text-slate-500 mx-auto mb-2" />
                       <p className="text-sm text-slate-400 text-center">
-                        اسحب صورة الفاتورة هنا أو <span className="text-indigo-400 font-medium">تصفح</span>
+                        اسحب صورة الفاتورة أو ملف PDF هنا أو <span className="text-indigo-400 font-medium">تصفح</span>
                       </p>
-                      <p className="text-xs text-slate-600 text-center mt-1">JPEG, PNG, WebP — حد أقصى 10MB</p>
+                      <p className="text-xs text-slate-600 text-center mt-1">JPEG, PNG, WebP, PDF — حد أقصى 20MB</p>
                       <input
                         id="invoice-file-input"
                         type="file"
-                        accept="image/jpeg,image/png,image/webp"
+                        accept="image/jpeg,image/png,image/webp,application/pdf"
                         className="hidden"
                         onChange={(e) => handleInvoiceSelect(e.target.files?.[0] || null)}
                       />
                     </div>
                   ) : (
                     <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-800/60 border border-slate-700">
-                      {invoicePreview && (
+                      {invoicePreview ? (
                         <img
                           src={invoicePreview}
                           alt="Invoice preview"
                           className="w-14 h-14 object-cover rounded-lg border border-slate-600"
                         />
+                      ) : (
+                        <span className="w-14 h-14 grid place-items-center rounded-lg border border-slate-600 bg-slate-900/60 shrink-0">
+                          <FileText size={22} className="text-rose-400" />
+                        </span>
                       )}
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-white font-medium truncate">{invoiceFile.name}</p>
@@ -1520,7 +1901,7 @@ function App() {
                     </div>
                     <button
                       onClick={classifyInvoice}
-                      disabled={!invoiceFile || isClassifying}
+                      disabled={!invoiceFile || isClassifying || isSendingProducts}
                       className="btn-primary flex-1 sm:flex-none !py-2 !px-5 !text-sm"
                     >
                       {isClassifying ? (
@@ -1640,10 +2021,55 @@ function App() {
                         )}
                       </div>
                     ))}
+
+                    {/* Send the typed products to the AI — fills the blank
+                        Code HS cells without touching codes already entered. */}
+                    <div
+                      dir="rtl"
+                      className="flex flex-wrap items-center justify-between gap-3 pt-3 mt-1 border-t border-slate-800"
+                    >
+                      <p className="text-xs text-slate-500">
+                        {pendingProductCount > 0
+                          ? `${pendingProductCount} منتوج بدون رمز — أرسلها للتصنيف الآلي.`
+                          : "كل المنتوجات لها رمز تعريفي."}
+                      </p>
+                      <button
+                        onClick={sendTypedProducts}
+                        disabled={
+                          pendingProductCount === 0 ||
+                          isSendingProducts ||
+                          isClassifying
+                        }
+                        className="btn-primary !py-2 !px-5 !text-sm"
+                      >
+                        {isSendingProducts ? (
+                          <>
+                            <Loader2 size={16} className="animate-spin" />
+                            <span>جاري التصنيف…</span>
+                          </>
+                        ) : (
+                          <>
+                            <Send size={15} />
+                            <span>
+                              إرسال
+                              {pendingProductCount > 0
+                                ? ` (${pendingProductCount})`
+                                : ""}
+                            </span>
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
                 )}
               </section>
+                </div>
+              </fieldset>
 
+              {/* ── Mandat ──────────────────────────────────────────────── */}
+              <fieldset className="group-box">
+                <legend className="group-title">Mandat</legend>
+                <div className="group-body">
               {/* Mandat MSC — autorisation aux mandataires */}
               <section className="card">
                 <label className="flex items-center gap-3 cursor-pointer select-none">
@@ -1758,6 +2184,359 @@ function App() {
                   </div>
                 )}
               </section>
+                </div>
+              </fieldset>
+
+              {/* ── Facture ─────────────────────────────────────────────── */}
+              <fieldset className="group-box">
+                <legend className="group-title">Facture</legend>
+                <div className="group-body">
+              <section className="card">
+                <label className="flex items-center gap-3 cursor-pointer select-none">
+                  <span className="relative shrink-0">
+                    <input
+                      type="checkbox"
+                      name="facture_enabled"
+                      checked={form.facture_enabled}
+                      onChange={handleInputChange}
+                      className="peer sr-only"
+                    />
+                    <span className="block w-10 h-6 rounded-full bg-slate-700 peer-checked:bg-indigo-500 transition-colors" />
+                    <span className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform peer-checked:translate-x-4" />
+                  </span>
+                  <span className="flex items-center gap-2.5">
+                    <Receipt size={18} className="text-indigo-400 shrink-0" />
+                    <span>
+                      <span className="block text-base font-bold text-white">
+                        Facture de transit
+                      </span>
+                      <span className="block text-xs text-slate-400 mt-0.5">
+                        Indépendante — ses propres noms, marchandise et montants
+                      </span>
+                    </span>
+                  </span>
+                </label>
+
+                {form.facture_enabled && (
+                  <div className="mt-6 space-y-7">
+                    {!factureReady && (
+                      <p className="flex items-start gap-2 text-xs text-amber-300/90 p-3 rounded-lg bg-amber-400/10 border border-amber-400/30">
+                        <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                        <span>Fill the client name (DOIT) to generate the facture.</span>
+                      </p>
+                    )}
+
+                    {/* ---- En-tête ---- */}
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-300 mb-3">
+                        En-tête
+                      </h3>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <Field label="Transit (en-tête)">
+                          <input
+                            className="input"
+                            value={form.facture.transit_name}
+                            onChange={(e) => updateFacture("transit_name", e.target.value)}
+                            placeholder="TRANSIT AOULA"
+                            style={upper}
+                          />
+                        </Field>
+                        <Field label="Client — DOIT" required>
+                          <input
+                            className="input"
+                            value={form.facture.client_name}
+                            onChange={(e) => updateFacture("client_name", e.target.value)}
+                            placeholder="e.g. SARL BAK BAY ASIE IMP /EXP"
+                            style={upper}
+                          />
+                        </Field>
+                        <Field label="N° agrément">
+                          <input
+                            className="input font-mono text-sm"
+                            value={form.facture.agrement}
+                            onChange={(e) => updateFacture("agrement", e.target.value)}
+                            placeholder="04048"
+                          />
+                        </Field>
+                        <Field label="Adresse client">
+                          <input
+                            className="input"
+                            value={form.facture.client_adresse}
+                            onChange={(e) => updateFacture("client_adresse", e.target.value)}
+                            placeholder="e.g. ORAN"
+                            style={upper}
+                          />
+                        </Field>
+                        <Field label="NIF transit">
+                          <input
+                            className="input font-mono text-sm"
+                            value={form.facture.nif_transit}
+                            onChange={(e) => updateFacture("nif_transit", e.target.value)}
+                            placeholder="196919250099510"
+                          />
+                        </Field>
+                        <Field label="NIF client">
+                          <input
+                            className="input font-mono text-sm"
+                            value={form.facture.client_nif}
+                            onChange={(e) => updateFacture("client_nif", e.target.value)}
+                            placeholder="002231011879137"
+                          />
+                        </Field>
+                        <Field label="D10 N°">
+                          <input
+                            className="input font-mono text-sm"
+                            value={form.facture.d10_numero}
+                            onChange={(e) => updateFacture("d10_numero", e.target.value)}
+                            placeholder="5020100002026DED025979I"
+                          />
+                        </Field>
+                        <Field label="DU (date)">
+                          <input
+                            className="input font-mono text-sm"
+                            inputMode="numeric"
+                            maxLength={10}
+                            value={form.facture.d10_date}
+                            onChange={(e) =>
+                              updateFacture("d10_date", maskDate(e.target.value))
+                            }
+                            placeholder="jj/mm/aaaa"
+                          />
+                        </Field>
+                      </div>
+                    </div>
+
+                    {/* ---- Marchandise — one single line, four columns ---- */}
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-300 mb-3">
+                        Marchandise
+                      </h3>
+                      <div className="space-y-2">
+                        <div className="hidden sm:grid grid-cols-[1fr_1.4fr_5rem_8rem_2.25rem] gap-2 px-1 text-[11px] font-semibold text-slate-500">
+                          <span>MARQUE BL</span>
+                          <span>DESIGNATION</span>
+                          <span>NBRS CTN</span>
+                          <span>POID BRUT</span>
+                          <span />
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-[1fr_1.4fr_5rem_8rem_2.25rem] gap-2 items-center">
+                          <input
+                            className="input"
+                            value={form.facture.ligne.marque}
+                            onChange={(e) => updateFactureLigne("marque", e.target.value)}
+                            placeholder="Marque BL"
+                            style={upper}
+                          />
+                          <input
+                            className="input"
+                            value={form.facture.ligne.designation}
+                            onChange={(e) =>
+                              updateFactureLigne("designation", e.target.value)
+                            }
+                            placeholder="Désignation"
+                            style={upper}
+                          />
+                          <input
+                            className="input font-mono text-sm"
+                            inputMode="numeric"
+                            value={form.facture.ligne.nbrs}
+                            onChange={(e) => updateFactureLigne("nbrs", e.target.value)}
+                            placeholder="02"
+                          />
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              className="input font-mono text-sm flex-1 min-w-0"
+                              inputMode="decimal"
+                              value={form.facture.ligne.poids}
+                              onChange={(e) => updateFactureLigne("poids", e.target.value)}
+                              placeholder="33190.00"
+                            />
+                            <span className="unit-suffix">KG</span>
+                          </div>
+                          <span />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ---- Détail de la facture ---- */}
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-3">
+                        <h3 className="text-sm font-semibold text-slate-300">
+                          Détail — débours / produit
+                        </h3>
+                        <button onClick={addFactureExtra} className="btn-ghost shrink-0">
+                          <Plus size={14} /> Ajouter un libellé
+                        </button>
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="hidden sm:grid grid-cols-[10.5rem_1fr_1fr_1.3fr_2.25rem] gap-2 px-1 text-[11px] font-semibold text-slate-500">
+                          <span>LIBELLES</span>
+                          <span>DEBOURS</span>
+                          <span>PRODUIT</span>
+                          <span>OBSERVATION</span>
+                          <span />
+                        </div>
+
+                        {FACTURE_KEYS.map((k) => {
+                          const isTva = k === "tva";
+                          // These three are normally billed in PRODUIT — leave
+                          // their DEBOURS cell unlabelled so it doesn't invite
+                          // a value, without ever blocking it.
+                          const quietDebours =
+                            k === "ouverture" || k === "tva" || k === "timbre";
+                          return (
+                            <div
+                              key={k}
+                              className="grid grid-cols-1 sm:grid-cols-[10.5rem_1fr_1fr_1.3fr_2.25rem] gap-2 items-center"
+                            >
+                              <span className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                                -{FACTURE_LABELS[k]}
+                                {isTva && !form.facture.tva_manual && (
+                                  <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-300/80">
+                                    auto
+                                  </span>
+                                )}
+                              </span>
+                              <input
+                                className="input font-mono text-sm"
+                                inputMode="decimal"
+                                value={form.facture.rows[k].debours}
+                                onChange={(e) =>
+                                  updateFactureRow(k, "debours", e.target.value)
+                                }
+                                placeholder={quietDebours ? "" : "DEBOURS"}
+                              />
+                              <div className="flex items-center gap-1.5">
+                                <input
+                                  className={`input font-mono text-sm flex-1 min-w-0 ${
+                                    isTva && !form.facture.tva_manual
+                                      ? "text-indigo-200"
+                                      : ""
+                                  }`}
+                                  inputMode="decimal"
+                                  value={
+                                    isTva
+                                      ? factureCalc.tvaValue
+                                      : form.facture.rows[k].produit
+                                  }
+                                  onChange={(e) =>
+                                    updateFactureRow(k, "produit", e.target.value)
+                                  }
+                                  placeholder="PRODUIT"
+                                />
+                                {isTva && form.facture.tva_manual && (
+                                  <button
+                                    onClick={resetTva}
+                                    className="p-1.5 rounded-lg text-slate-500 hover:text-indigo-300 hover:bg-indigo-400/10 transition-colors shrink-0"
+                                    title="Revenir au calcul automatique (9%)"
+                                  >
+                                    <RotateCcw size={14} />
+                                  </button>
+                                )}
+                              </div>
+                              <input
+                                className="input text-sm"
+                                value={form.facture.rows[k].observation}
+                                onChange={(e) =>
+                                  updateFactureRow(k, "observation", e.target.value)
+                                }
+                                placeholder="OBSERVATION"
+                              />
+                              <span />
+                            </div>
+                          );
+                        })}
+
+                        {/* extra libellés added by the user */}
+                        {form.facture.extras.map((e) => (
+                          <div
+                            key={e.id}
+                            className="container-row grid grid-cols-1 sm:grid-cols-[10.5rem_1fr_1fr_1.3fr_2.25rem] gap-2 items-center"
+                          >
+                            <input
+                              className="input !px-2.5 text-xs font-semibold"
+                              value={e.libelle}
+                              onChange={(ev) =>
+                                updateFactureExtra(e.id, "libelle", ev.target.value)
+                              }
+                              placeholder="LIBELLE"
+                              style={upper}
+                            />
+                            <input
+                              className="input font-mono text-sm"
+                              inputMode="decimal"
+                              value={e.debours}
+                              onChange={(ev) =>
+                                updateFactureExtra(e.id, "debours", ev.target.value)
+                              }
+                              placeholder="DEBOURS"
+                            />
+                            <input
+                              className="input font-mono text-sm"
+                              inputMode="decimal"
+                              value={e.produit}
+                              onChange={(ev) =>
+                                updateFactureExtra(e.id, "produit", ev.target.value)
+                              }
+                              placeholder="PRODUIT"
+                            />
+                            <input
+                              className="input text-sm"
+                              value={e.observation}
+                              onChange={(ev) =>
+                                updateFactureExtra(e.id, "observation", ev.target.value)
+                              }
+                              placeholder="OBSERVATION"
+                            />
+                            <button
+                              onClick={() => removeFactureExtra(e.id)}
+                              className="inline-flex items-center justify-center gap-1.5 p-1.5 rounded-lg text-rose-300/80 bg-rose-500/10 border border-rose-500/25 hover:text-white hover:bg-rose-500/25 transition-colors justify-self-stretch sm:justify-self-center"
+                              title="Supprimer cette ligne"
+                              aria-label="Supprimer cette ligne"
+                            >
+                              <Trash2 size={15} />
+                              <span className="sm:hidden text-xs font-medium">
+                                Supprimer la ligne
+                              </span>
+                            </button>
+                          </div>
+                        ))}
+
+                        {/* live totals */}
+                        <div className="grid grid-cols-1 sm:grid-cols-[10.5rem_1fr_1fr_1.3fr_2.25rem] gap-2 items-center pt-3 mt-1 border-t border-slate-800">
+                          <span className="text-xs font-bold text-slate-200">TAUX</span>
+                          <span className="total-cell">
+                            {factureCalc.tauxDebours || "—"}
+                          </span>
+                          <span className="total-cell">
+                            {factureCalc.tauxProduit || "—"}
+                          </span>
+                          <span />
+                          <span />
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-[10.5rem_1fr_1fr_1.3fr_2.25rem] gap-2 items-center">
+                          <span className="text-xs font-bold text-slate-200">
+                            TOTAL TTC
+                          </span>
+                          <span className="total-cell total-cell-strong sm:col-span-2">
+                            {factureCalc.totalTtc || "—"}
+                          </span>
+                          <span />
+                          <span />
+                        </div>
+                        <p className="text-xs text-slate-500 pt-1">
+                          TVA 9% calculée sur OUVERTURE DOSSIER (débours ou produit) —
+                          modifiable à la main. TAUX = somme de chaque colonne,
+                          TOTAL TTC = débours + produit.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </section>
+                </div>
+              </fieldset>
             </div>
 
             {/* Actions */}
@@ -1766,8 +2545,8 @@ function App() {
                 <p className="text-xs text-slate-500 mb-3">
                   Every part is optional — complete any one of them to generate: transit
                   documents (names + shipping company + containers + at least one
-                  document type), the DCP declaration, the tariff annex, or the
-                  Mandat MSC (transit + client name).
+                  document type), the DCP declaration, the tariff annex, the
+                  Mandat MSC (transit + client name), or the Facture (client name).
                 </p>
               ) : (
                 <p className="text-xs text-slate-400 mb-3 flex flex-wrap items-center gap-x-1.5 gap-y-1">
@@ -1798,6 +2577,9 @@ function App() {
                     <span className="doc-pill">1 × ملحق التعريفات الجمركية</span>
                   )}
                   {mandatReady && <span className="doc-pill">1 × Mandat MSC</span>}
+                  {factureReady && (
+                    <span className="doc-pill">1 × Facture de transit</span>
+                  )}
                   <span className="text-slate-500">
                     will be generated ({docCount} document{docCount > 1 ? "s" : ""}, ZIP download)
                   </span>
@@ -1931,6 +2713,9 @@ function App() {
                           )}
                           {entry.payload.mandat_enabled && (
                             <span className="doc-pill !text-[10px]">Mandat</span>
+                          )}
+                          {entry.payload.facture_enabled && (
+                            <span className="doc-pill !text-[10px]">Facture</span>
                           )}
                         </span>
                       </button>

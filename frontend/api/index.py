@@ -50,7 +50,7 @@ FACTURE_KEYS = [
     "echange", "magasinage", "dechargement", "restitution", "surestaries",
     "ouverture", "honnoraire", "tva", "timbre",
 ]
-TVA_RATE = 0.09                         # TVA 9% on OUVERTURE DOSSIER
+TVA_RATE = 0.09                         # TVA 9% on HONNORAIRE
 
 app = FastAPI(title="Transit Document Generator API", version="2.0.0")
 
@@ -231,7 +231,7 @@ def build_facture_context(f: "Facture") -> dict:
     """Header + both tables + the three computed totals.
 
     Rules (confirmed with the user):
-      * TVA 9% = 9% of OUVERTURE DOSSIER, taken from whichever column it was
+      * TVA 9% = 9% of HONNORAIRE, taken from whichever column it was
         typed in (debours + produit), printed in the PRODUIT column, and
         overridable by hand (tva_manual).
       * TAUX debours / TAUX produit = the sum of their column, extras included.
@@ -249,8 +249,8 @@ def build_facture_context(f: "Facture") -> dict:
     if f.tva_manual:
         tva_txt = money(rows["tva"].produit)
     else:
-        base = (parse_money(rows["ouverture"].produit) or 0.0) + \
-               (parse_money(rows["ouverture"].debours) or 0.0)
+        base = (parse_money(rows["honnoraire"].produit) or 0.0) + \
+               (parse_money(rows["honnoraire"].debours) or 0.0)
         tva_txt = f"{base * TVA_RATE:.2f}" if base else ""
         rows["tva"] = rows["tva"].model_copy(update={"produit": tva_txt})
 

@@ -586,11 +586,11 @@ function App() {
   const factureCalc = useMemo(() => {
     const { rows, extras, tva_manual } = facture;
 
-    // TVA 9% of OUVERTURE DOSSIER — taken from whichever column it was typed
+    // TVA 9% of HONNORAIRE — taken from whichever column it was typed
     // in, printed in PRODUIT, overridable by hand.
     const base =
-      (parseMoney(rows.ouverture.produit) ?? 0) +
-      (parseMoney(rows.ouverture.debours) ?? 0);
+      (parseMoney(rows.honnoraire.produit) ?? 0) +
+      (parseMoney(rows.honnoraire.debours) ?? 0);
     const tvaAuto = base ? money2(base * TVA_RATE) : "";
     const tvaValue = tva_manual ? rows.tva.produit : tvaAuto;
 

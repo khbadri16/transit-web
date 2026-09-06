@@ -97,15 +97,20 @@ type FactureRow = {
 type FactureExtra = FactureRow & { id: string; libelle: string };
 
 /** The nine fixed libellés, in printing order. */
-const FACTURE_KEYS = [
-  "echange", "magazinage", "dechargement", "restitution", "surestaries",
+/** Body rows — user-added extras appear after these. */
+const FACTURE_BODY_KEYS = [
+  "echange", "magasinage", "dechargement", "restitution", "surestaries",
+] as const;
+/** Footer rows — always last in the table. */
+const FACTURE_FOOTER_KEYS = [
   "ouverture", "honnoraire", "tva", "timbre",
 ] as const;
+const FACTURE_KEYS = [...FACTURE_BODY_KEYS, ...FACTURE_FOOTER_KEYS] as const;
 type FactureKey = (typeof FACTURE_KEYS)[number];
 
 const FACTURE_LABELS: Record<FactureKey, string> = {
   echange: "ECHANGE",
-  magazinage: "MAGAZINAGE",
+  magasinage: "MAGASINAGE",
   dechargement: "DECHARGEMENT",
   restitution: "RESTITUSION TC",
   surestaries: "SURESTARIES",
@@ -142,10 +147,15 @@ type MandatFields = {
   client_email: string;
   client_address: string;
   client_phone: string;
+  client_rc: string;
+  client_nif: string;
   transit_username: string;
   transit_email: string;
   transit_address: string;
   transit_phone: string;
+  transit_rc: string;
+  transit_nif: string;
+  transit_agrement: string;
 };
 
 type HistoryEntry = {
@@ -358,20 +368,28 @@ const initialMandat: MandatFields = {
   client_email: "",
   client_address: "",
   client_phone: "",
+  client_rc: "",
+  client_nif: "",
   transit_username: "Belarbi Tayeb",
   transit_email: "transittayeb@gmail.com",
-  transit_address: "",
+  transit_address: "N 14 RUE MUSTAPHA ADJEKIM SKIKDA",
   transit_phone: "+213 675714539",
+  transit_rc: "23/01-0073687 A 01",
+  transit_nif: "15021010095418000000",
+  transit_agrement: "20133",
 };
 
 const MANDAT_ROWS: {
   label: string;
-  client: keyof MandatFields;
+  client: keyof MandatFields | null;
   transit: keyof MandatFields;
   type?: "email" | "tel";
   placeholder?: string;
 }[] = [
   { label: "Personne à contacter", client: "client_username", transit: "transit_username", placeholder: "e.g. M. Benali" },
+  { label: "RC", client: "client_rc", transit: "transit_rc", placeholder: "e.g. 23/01-XXXXXXX X XX" },
+  { label: "NIF", client: "client_nif", transit: "transit_nif", placeholder: "e.g. 150XXXXXXXXXXXXXXXX" },
+  { label: "Agrément N°", client: null, transit: "transit_agrement", placeholder: "e.g. 20133" },
   { label: "Email", client: "client_email", transit: "transit_email", type: "email", placeholder: "e.g. contact@societe.dz" },
   { label: "Adresse postale", client: "client_address", transit: "transit_address", placeholder: "e.g. 12 Rue X, Alger" },
   { label: "Téléphone", client: "client_phone", transit: "transit_phone", type: "tel", placeholder: "e.g. +213 21 00 00 00" },
@@ -389,7 +407,7 @@ const initialFactureRows = (): Record<FactureKey, FactureRow> => {
   const rows = {} as Record<FactureKey, FactureRow>;
   for (const k of FACTURE_KEYS) rows[k] = emptyFactureRow();
   // Pre-filled but editable, exactly like the paper invoice.
-  rows.ouverture.produit = "20000.00";
+  rows.honnoraire.produit = "20000.00";
   rows.timbre.produit = "436.00";
   return rows;
 };
@@ -2158,14 +2176,18 @@ function App() {
                         <span className="text-xs font-medium text-slate-400 sm:text-right sm:pr-1">
                           {row.label}
                         </span>
-                        <input
-                          className="input"
-                          type={row.type ?? "text"}
-                          value={form.mandat[row.client]}
-                          onChange={(e) => updateMandat(row.client, e.target.value)}
-                          placeholder={row.placeholder}
-                          aria-label={`${row.label} — entreprise`}
-                        />
+                        {row.client ? (
+                          <input
+                            className="input"
+                            type={row.type ?? "text"}
+                            value={form.mandat[row.client]}
+                            onChange={(e) => updateMandat(row.client!, e.target.value)}
+                            placeholder={row.placeholder}
+                            aria-label={`${row.label} — entreprise`}
+                          />
+                        ) : (
+                          <span className="input opacity-30 cursor-not-allowed bg-slate-800/50" aria-hidden />
+                        )}
                         <input
                           className="input"
                           type={row.type ?? "text"}
@@ -2378,130 +2400,139 @@ function App() {
                           <span />
                         </div>
 
-                        {FACTURE_KEYS.map((k) => {
-                          const isTva = k === "tva";
-                          // These three are normally billed in PRODUIT — leave
-                          // their DEBOURS cell unlabelled so it doesn't invite
-                          // a value, without ever blocking it.
-                          const quietDebours =
-                            k === "ouverture" || k === "tva" || k === "timbre";
-                          return (
-                            <div
-                              key={k}
-                              className="grid grid-cols-1 sm:grid-cols-[10.5rem_1fr_1fr_1.3fr_2.25rem] gap-2 items-center"
-                            >
-                              <span className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                                -{FACTURE_LABELS[k]}
-                                {isTva && !form.facture.tva_manual && (
-                                  <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-300/80">
-                                    auto
-                                  </span>
-                                )}
-                              </span>
-                              <input
-                                className="input font-mono text-sm"
-                                inputMode="decimal"
-                                value={form.facture.rows[k].debours}
-                                onChange={(e) =>
-                                  updateFactureRow(k, "debours", e.target.value)
-                                }
-                                placeholder={quietDebours ? "" : "DEBOURS"}
-                              />
-                              <div className="flex items-center gap-1.5">
+                        {/* Helper: render one fixed-row key */}
+                        {(() => {
+                          const renderFixedRow = (k: FactureKey) => {
+                            const isTva = k === "tva";
+                            const quietDebours =
+                              k === "ouverture" || k === "tva" || k === "timbre";
+                            return (
+                              <div
+                                key={k}
+                                className="grid grid-cols-1 sm:grid-cols-[10.5rem_1fr_1fr_1.3fr_2.25rem] gap-2 items-center"
+                              >
+                                <span className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                                  -{FACTURE_LABELS[k]}
+                                  {isTva && !form.facture.tva_manual && (
+                                    <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-300/80">
+                                      auto
+                                    </span>
+                                  )}
+                                </span>
                                 <input
-                                  className={`input font-mono text-sm flex-1 min-w-0 ${
-                                    isTva && !form.facture.tva_manual
-                                      ? "text-indigo-200"
-                                      : ""
-                                  }`}
+                                  className="input font-mono text-sm"
                                   inputMode="decimal"
-                                  value={
-                                    isTva
-                                      ? factureCalc.tvaValue
-                                      : form.facture.rows[k].produit
-                                  }
+                                  value={form.facture.rows[k].debours}
                                   onChange={(e) =>
-                                    updateFactureRow(k, "produit", e.target.value)
+                                    updateFactureRow(k, "debours", e.target.value)
                                   }
-                                  placeholder="PRODUIT"
+                                  placeholder={quietDebours ? "" : "DEBOURS"}
                                 />
-                                {isTva && form.facture.tva_manual && (
-                                  <button
-                                    onClick={resetTva}
-                                    className="p-1.5 rounded-lg text-slate-500 hover:text-indigo-300 hover:bg-indigo-400/10 transition-colors shrink-0"
-                                    title="Revenir au calcul automatique (9%)"
-                                  >
-                                    <RotateCcw size={14} />
-                                  </button>
-                                )}
+                                <div className="flex items-center gap-1.5">
+                                  <input
+                                    className={`input font-mono text-sm flex-1 min-w-0 ${
+                                      isTva && !form.facture.tva_manual
+                                        ? "text-indigo-200"
+                                        : ""
+                                    }`}
+                                    inputMode="decimal"
+                                    value={
+                                      isTva
+                                        ? factureCalc.tvaValue
+                                        : form.facture.rows[k].produit
+                                    }
+                                    onChange={(e) =>
+                                      updateFactureRow(k, "produit", e.target.value)
+                                    }
+                                    placeholder="PRODUIT"
+                                  />
+                                  {isTva && form.facture.tva_manual && (
+                                    <button
+                                      onClick={resetTva}
+                                      className="p-1.5 rounded-lg text-slate-500 hover:text-indigo-300 hover:bg-indigo-400/10 transition-colors shrink-0"
+                                      title="Revenir au calcul automatique (9%)"
+                                    >
+                                      <RotateCcw size={14} />
+                                    </button>
+                                  )}
+                                </div>
+                                <input
+                                  className="input text-sm"
+                                  value={form.facture.rows[k].observation}
+                                  onChange={(e) =>
+                                    updateFactureRow(k, "observation", e.target.value)
+                                  }
+                                  placeholder="OBSERVATION"
+                                />
+                                <span />
                               </div>
-                              <input
-                                className="input text-sm"
-                                value={form.facture.rows[k].observation}
-                                onChange={(e) =>
-                                  updateFactureRow(k, "observation", e.target.value)
-                                }
-                                placeholder="OBSERVATION"
-                              />
-                              <span />
-                            </div>
-                          );
-                        })}
+                            );
+                          };
+                          return (
+                            <>
+                              {/* Body rows: ECHANGE → SURESTARIES */}
+                              {FACTURE_BODY_KEYS.map(renderFixedRow)}
 
-                        {/* extra libellés added by the user */}
-                        {form.facture.extras.map((e) => (
-                          <div
-                            key={e.id}
-                            className="container-row grid grid-cols-1 sm:grid-cols-[10.5rem_1fr_1fr_1.3fr_2.25rem] gap-2 items-center"
-                          >
-                            <input
-                              className="input !px-2.5 text-xs font-semibold"
-                              value={e.libelle}
-                              onChange={(ev) =>
-                                updateFactureExtra(e.id, "libelle", ev.target.value)
-                              }
-                              placeholder="LIBELLE"
-                              style={upper}
-                            />
-                            <input
-                              className="input font-mono text-sm"
-                              inputMode="decimal"
-                              value={e.debours}
-                              onChange={(ev) =>
-                                updateFactureExtra(e.id, "debours", ev.target.value)
-                              }
-                              placeholder="DEBOURS"
-                            />
-                            <input
-                              className="input font-mono text-sm"
-                              inputMode="decimal"
-                              value={e.produit}
-                              onChange={(ev) =>
-                                updateFactureExtra(e.id, "produit", ev.target.value)
-                              }
-                              placeholder="PRODUIT"
-                            />
-                            <input
-                              className="input text-sm"
-                              value={e.observation}
-                              onChange={(ev) =>
-                                updateFactureExtra(e.id, "observation", ev.target.value)
-                              }
-                              placeholder="OBSERVATION"
-                            />
-                            <button
-                              onClick={() => removeFactureExtra(e.id)}
-                              className="inline-flex items-center justify-center gap-1.5 p-1.5 rounded-lg text-rose-300/80 bg-rose-500/10 border border-rose-500/25 hover:text-white hover:bg-rose-500/25 transition-colors justify-self-stretch sm:justify-self-center"
-                              title="Supprimer cette ligne"
-                              aria-label="Supprimer cette ligne"
-                            >
-                              <Trash2 size={15} />
-                              <span className="sm:hidden text-xs font-medium">
-                                Supprimer la ligne
-                              </span>
-                            </button>
-                          </div>
-                        ))}
+                              {/* Extra libellés added by the user — between body and footer */}
+                              {form.facture.extras.map((e) => (
+                                <div
+                                  key={e.id}
+                                  className="container-row grid grid-cols-1 sm:grid-cols-[10.5rem_1fr_1fr_1.3fr_2.25rem] gap-2 items-center"
+                                >
+                                  <input
+                                    className="input !px-2.5 text-xs font-semibold"
+                                    value={e.libelle}
+                                    onChange={(ev) =>
+                                      updateFactureExtra(e.id, "libelle", ev.target.value)
+                                    }
+                                    placeholder="LIBELLE"
+                                    style={upper}
+                                  />
+                                  <input
+                                    className="input font-mono text-sm"
+                                    inputMode="decimal"
+                                    value={e.debours}
+                                    onChange={(ev) =>
+                                      updateFactureExtra(e.id, "debours", ev.target.value)
+                                    }
+                                    placeholder="DEBOURS"
+                                  />
+                                  <input
+                                    className="input font-mono text-sm"
+                                    inputMode="decimal"
+                                    value={e.produit}
+                                    onChange={(ev) =>
+                                      updateFactureExtra(e.id, "produit", ev.target.value)
+                                    }
+                                    placeholder="PRODUIT"
+                                  />
+                                  <input
+                                    className="input text-sm"
+                                    value={e.observation}
+                                    onChange={(ev) =>
+                                      updateFactureExtra(e.id, "observation", ev.target.value)
+                                    }
+                                    placeholder="OBSERVATION"
+                                  />
+                                  <button
+                                    onClick={() => removeFactureExtra(e.id)}
+                                    className="inline-flex items-center justify-center gap-1.5 p-1.5 rounded-lg text-rose-300/80 bg-rose-500/10 border border-rose-500/25 hover:text-white hover:bg-rose-500/25 transition-colors justify-self-stretch sm:justify-self-center"
+                                    title="Supprimer cette ligne"
+                                    aria-label="Supprimer cette ligne"
+                                  >
+                                    <Trash2 size={15} />
+                                    <span className="sm:hidden text-xs font-medium">
+                                      Supprimer la ligne
+                                    </span>
+                                  </button>
+                                </div>
+                              ))}
+
+                              {/* Footer rows: OUVERTURE DOSSIER → TIMBRE (always last) */}
+                              {FACTURE_FOOTER_KEYS.map(renderFixedRow)}
+                            </>
+                          );
+                        })()}
 
                         {/* live totals */}
                         <div className="grid grid-cols-1 sm:grid-cols-[10.5rem_1fr_1fr_1.3fr_2.25rem] gap-2 items-center pt-3 mt-1 border-t border-slate-800">

@@ -47,7 +47,7 @@ TPL_FACTURE = "FACTURE TRANSIT.docx"    # rendered once (facture de transit)
 
 # The nine fixed libellés of the facture table, in the order they are printed.
 FACTURE_KEYS = [
-    "echange", "magazinage", "dechargement", "restitution", "surestaries",
+    "echange", "magasinage", "dechargement", "restitution", "surestaries",
     "ouverture", "honnoraire", "tva", "timbre",
 ]
 TVA_RATE = 0.09                         # TVA 9% on OUVERTURE DOSSIER
@@ -114,10 +114,15 @@ class Mandat(BaseModel):
     client_email: str = ""
     client_address: str = ""
     client_phone: str = ""
+    client_rc: str = ""         # registre de commerce
+    client_nif: str = ""        # numéro d'identification fiscale
     transit_username: str = ""  # personne à contacter, côté transitaire
     transit_email: str = ""
     transit_address: str = ""
     transit_phone: str = ""
+    transit_rc: str = ""        # registre de commerce
+    transit_nif: str = ""       # numéro d'identification fiscale
+    transit_agrement: str = ""  # agrément N°
 
 
 class FactureLigne(BaseModel):
@@ -822,11 +827,16 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                         "client_email": m.client_email.strip(),
                         "client_address": m.client_address.strip(),
                         "client_phone": m.client_phone.strip(),
+                        "client_rc": m.client_rc.strip(),
+                        "client_nif": m.client_nif.strip(),
                         "transit_name": transit_lettre,
                         "transit_username": m.transit_username.strip(),
                         "transit_email": m.transit_email.strip(),
                         "transit_address": m.transit_address.strip(),
                         "transit_phone": m.transit_phone.strip(),
+                        "transit_rc": m.transit_rc.strip(),
+                        "transit_nif": m.transit_nif.strip(),
+                        "transit_agrement": m.transit_agrement.strip(),
                     }),
                 )
 

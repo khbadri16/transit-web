@@ -1,14 +1,10 @@
 import { Fragment, useMemo, useRef, useState } from "react";
+import { ArabicKeyboard } from "./ArabicKeyboard";
 import {
   AlertTriangle,
   CheckCircle2,
-  ChevronsLeft,
-  ChevronsRight,
   Clock,
   Copyright,
-  Delete,
-  Eraser,
-  Eye,
   FileText,
   History,
   Keyboard,
@@ -68,7 +64,7 @@ type GeneratePayload = {
   dcp_enabled: boolean;
   dcp: Record<string, string>;
   dcp_produits: { produit: string; code: string }[];
-  /* Mandat MSC — client_name / transit_name are reused from the fields above */
+  /* Mandat MSC — has its own entreprise / transitaire names (mandat.client_name / mandat.transit_name) */
   mandat_enabled: boolean;
   mandat: MandatFields;
   /* Facture de transit — completely independent from everything above */
@@ -143,6 +139,10 @@ type FacturePayload = Omit<FactureFields, "extras"> & {
 
 /** Contact block of the Mandat MSC letter (both columns of its table). */
 type MandatFields = {
+  /** Nom de l'entreprise — typed here, independent from Global details. */
+  client_name: string;
+  /** Transitaire (mandataire) — typed here, printed exactly as written. */
+  transit_name: string;
   client_username: string;
   client_email: string;
   client_address: string;
@@ -238,8 +238,12 @@ type DcpFieldDef = {
   suffix?: string;
   /** true = unit sits at the far left (end of an RTL row) */
   suffixEnd?: boolean;
-  /** Show the currency selector (EUR / USD / DA / custom) */
+  /** Show the currency selector (USD / EUR / DA / custom) */
   currency?: boolean;
+  /** Mobile keyboard hint for number-only fields */
+  inputMode?: "numeric";
+  /** القيمة بالدينار — computed live from القيمة × the fixed rate */
+  autoDa?: boolean;
 };
 
 /** Fields grouped exactly like the lines of the printed DCP paper. */
@@ -250,10 +254,13 @@ const DCP_ROWS: DcpFieldDef[][] = [
     { key: "تاريخ_الاستراد", label: "تاريخ س ت", type: "date" },
   ],
   [{ key: "العنوان", num: "2", label: "العنوان", type: "text", placeholder: "العنوان الحقيقي للمتعامل" }],
-  [{ key: "تعيين_المنتوج", num: "3", label: "تعيين المنتوج", type: "text" }],
+  /* The placeholder in DCP.docx / the PDF stays تعيين_المنتوج (and the paper
+     still prints "تعيين المنتوج") — only the on-screen label changed. */
+  [{ key: "تعيين_المنتوج", num: "3", label: "نوع المنتوج", type: "text" }],
   [
     { key: "معروض_في", num: "4", label: "معروض في", type: "text" },
-    { key: "متكون_من", num: "5", label: "متكون من", type: "text" },
+    /* Only the number is typed — "طرد" is a static unit added on generation. */
+    { key: "متكون_من", num: "5", label: "متكون من", type: "text", placeholder: "عدد الطرود", suffix: "طرد", suffixEnd: true, inputMode: "numeric" },
   ],
   [{ key: "الكمية", num: "6", label: "الكمية", type: "text", placeholder: "الكمية بالأطنان", suffix: "طن", suffixEnd: true }],
   [
@@ -261,7 +268,7 @@ const DCP_ROWS: DcpFieldDef[][] = [
     { key: "القيمة", num: "9", label: "القيمة", type: "text", currency: true },
   ],
   [
-    { key: "القيمة_بالدينار", num: "9", label: "القيمة بالدينار", type: "text", suffix: "DA" },
+    { key: "القيمة_بالدينار", num: "9", label: "القيمة بالدينار", type: "text", suffix: "DA", autoDa: true },
     { key: "الفاتورة_تاريخ", label: "تاريخ الفاتورة", type: "date" },
   ],
   [{ key: "الصانع", num: "10", label: "الصانع", type: "text" }],
@@ -281,7 +288,7 @@ const DCP_ALL_FIELDS = DCP_ROWS.flat();
 /* رقم السجل التجاري — fixed format, entered left-to-right:
  *   nn / nn - nnnnnnn [arabic letter] nn      e.g. 19/00-1163066ب23
  * Stored as 5 separate dcp keys. The document renders it as an inline image
- * (drawn left-to-right, immune to bidi); the preview uses isolated spans. */
+ * (drawn left-to-right, immune to bidi). */
 const RC_PARTS = [
   { key: "رقم_س_ت_1", max: 2, ph: "19", w: "w-14" },
   { key: "رقم_س_ت_2", max: 2, ph: "00", w: "w-14" },
@@ -291,41 +298,73 @@ const RC_PARTS = [
 ] as const;
 const RC_LETTER_KEY = "رقم_س_ت_حرف";
 
-/** The 5 س ت parts, trimmed, in typing order ("" placeholders when empty). */
-const rcParts = (dcp: Record<string, string>) =>
-  RC_PARTS.map((p) => (dcp[p.key] ?? "").trim());
-
 const initialDcp: Record<string, string> = {
   ...Object.fromEntries(DCP_ALL_FIELDS.map((f) => [f.key, ""])),
   ...Object.fromEntries(RC_PARTS.map((p) => [p.key, ""])),
   [RC_LETTER_KEY]: "ب", // most common letter — editable
-  القيمة_عملة: "EUR",
+  معروض_في: "طرود", // default — editable
+  القيمة_عملة: "USD",
   القيمة_عملة_نص: "",
 };
 
 /** Currency options for القيمة — "SPEC" lets the user type his own. */
-const CURRENCY_OPTIONS = ["EUR", "USD", "DA"] as const;
+const CURRENCY_OPTIONS = ["USD", "EUR", "DA"] as const;
+const DEFAULT_CURRENCY = "USD";
 
-/** Resolve the currency to ship/preview with القيمة. */
-const resolveCurrency = (dcp: Record<string, string>) => {
-  const cur = (dcp["القيمة_عملة"] || "EUR").trim();
-  return cur === "SPEC" ? (dcp["القيمة_عملة_نص"] || "").trim() : cur;
+/* --------------------------------------------------------------------------
+ * القيمة بالدينار — live conversion with a FIXED rate.
+ * Official Banque d'Algérie rates of 30/09/2026 — update these two numbers
+ * whenever you want a newer rate (1 unit of currency = X DA).
+ * ------------------------------------------------------------------------ */
+const DA_RATES: Record<string, number> = {
+  USD: 133.7,
+  EUR: 152.0,
+  DA: 1,
+};
+const DA_RATES_DATE = "30/09/2026";
+
+/** "12 500,50" / "12,500.50" / "12500.5" -> 12500.5 ; unusable text -> null. */
+const parseAmount = (value: string): number | null => {
+  let t = (value || "").replace(/[\s\u00a0\u202f]/g, "");
+  if (!t) return null;
+  const lastComma = t.lastIndexOf(",");
+  const lastDot = t.lastIndexOf(".");
+  if (lastComma !== -1 && lastDot !== -1) {
+    // both present: the last one is the decimal separator
+    t = lastComma > lastDot
+      ? t.replace(/\./g, "").replace(",", ".")
+      : t.replace(/,/g, "");
+  } else if (lastComma !== -1) {
+    // commas only: "1,5" / "1,50" = decimal, "12,500" / "1,250,000" = thousands
+    const parts = t.split(",");
+    t = parts.length === 2 && parts[1].length <= 2
+      ? parts.join(".")
+      : parts.join("");
+  } else if ((t.match(/\./g) || []).length > 1) {
+    t = t.replace(/\./g, ""); // "1.250.000" = thousands
+  }
+  if (!/^\d*\.?\d+$|^\d+\.$/.test(t)) return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
 };
 
-/** Arabic on-screen keyboard layout. */
-const AR_KB_ROWS: string[][] = [
-  ["ض", "ص", "ث", "ق", "ف", "غ", "ع", "ه", "خ", "ح", "ج", "د", "ذ"],
-  ["ش", "س", "ي", "ب", "ل", "ا", "ت", "ن", "م", "ك", "ط"],
-  ["ئ", "ء", "ؤ", "ر", "لا", "ى", "ة", "و", "ز", "ظ"],
-  ["أ", "إ", "آ", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
-  ["،", "؛", ":", "/", "-", ".", "(", ")", "٪"],
-];
-
-/** 2026-01-31 -> 31/01/2026 (forms already use dd/mm/yyyy; ISO just in case) */
-const fmtDateDMY = (v: string) => {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((v || "").trim());
-  return m ? `${m[3]}/${m[2]}/${m[1]}` : v;
+/** 1671250 -> "1 671 250,00" (Algerian/French style, plain spaces). */
+const fmtDa = (n: number) => {
+  const [int, dec] = n.toFixed(2).split(".");
+  return `${int.replace(/\B(?=(\d{3})+(?!\d))/g, " ")},${dec}`;
 };
+
+/** The DA rate for the selected currency, or null for a custom currency. */
+const daRateFor = (dcp: Record<string, string>): number | null =>
+  DA_RATES[(dcp["القيمة_عملة"] || DEFAULT_CURRENCY).trim()] ?? null;
+
+/** القيمة converted to DA ("" while القيمة is empty or not a number). */
+const convertToDa = (dcp: Record<string, string>): string => {
+  const rate = daRateFor(dcp);
+  const amount = parseAmount(dcp["القيمة"] ?? "");
+  return rate === null || amount === null ? "" : fmtDa(amount * rate);
+};
+
 
 /** Auto-mask typed digits into dd/mm/yyyy. */
 const maskDmy = (raw: string) => {
@@ -364,6 +403,8 @@ const COMPANIES: string[] = ["CMA", "AKKON", "MSC", "HMM", "WHITE LINE", "COSCO"
 
 /** The transitaire side rarely changes — prefilled, still editable. */
 const initialMandat: MandatFields = {
+  client_name: "",
+  transit_name: "",
   client_username: "",
   client_email: "",
   client_address: "",
@@ -506,10 +547,11 @@ const initialForm: FormState = {
   weight_of_all_containers: "",
   force_uppercase: true,
   containers: [],
-  doc_mise: true,
-  doc_lettre: true,
-  doc_bon: true,
-  doc_merge: false,
+  /* Default: only the single merged Word file; the separate files are opt-in. */
+  doc_mise: false,
+  doc_lettre: false,
+  doc_bon: false,
+  doc_merge: true,
   dcp_enabled: false,
   dcp: { ...initialDcp },
   dcp_produits: [],
@@ -534,10 +576,6 @@ function App() {
 
   /** Which DCP field currently shows the Arabic keyboard (by key). */
   const [kbField, setKbField] = useState<string | null>(null);
-  /** Live DCP paper collapsed with the << button (desktop). */
-  const [paperCollapsed, setPaperCollapsed] = useState(false);
-  /** Live DCP paper slid in as a drawer (phones only). */
-  const [mobilePaperOpen, setMobilePaperOpen] = useState(false);
   const dcpInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   /* AI tariff classification */
@@ -617,12 +655,12 @@ function App() {
 
   const factureReady =
     form.facture_enabled && form.facture.client_name.trim() !== "";
-  /* The Mandat reuses the two names from Global details — nothing else from
-     the transit part, so it can be generated without any container. */
+  /* The Mandat is independent: it has its own entreprise + transitaire
+     names (typed in the Mandat part), so it needs nothing from Global details. */
   const mandatReady =
     form.mandat_enabled &&
-    form.transit_name.trim() !== "" &&
-    form.client_name.trim() !== "";
+    form.mandat.client_name.trim() !== "" &&
+    form.mandat.transit_name.trim() !== "";
   const canGenerate =
     transitReady || dcpReady || annexReady || mandatReady || factureReady;
   const docCount =
@@ -636,10 +674,6 @@ function App() {
     (annexReady ? 1 : 0) +
     (mandatReady ? 1 : 0) +
     (factureReady ? 1 : 0);
-
-  /** The live DCP paper: available on large screens while DCP is enabled. */
-  const paperAvailable = form.dcp_enabled;
-  const showPaper = paperAvailable && !paperCollapsed;
 
   /** Opens Gmail's compose page (works in any browser, no mail app needed). */
   const bugReportSubject = "Bug Report - Transit Document Generator";
@@ -658,7 +692,6 @@ function App() {
     const { name, value, type, checked } = e.target;
     if (name === "dcp_enabled" && !checked) {
       setKbField(null);
-      setMobilePaperOpen(false);
     }
     setForm((prev) => ({
       ...prev,
@@ -667,6 +700,23 @@ function App() {
   };
 
   /* --- DCP handlers ------------------------------------------------------- */
+
+  /* القيمة بالدينار follows القيمة live (fixed rate). Only a custom currency
+     ("أخرى…") has no rate — then the field is typed by hand. */
+  const daRate = daRateFor(form.dcp);
+  const daValue =
+    daRate !== null ? convertToDa(form.dcp) : form.dcp["القيمة_بالدينار"] ?? "";
+  const daHint: React.ReactNode = (() => {
+    const cur = (form.dcp["القيمة_عملة"] || DEFAULT_CURRENCY).trim();
+    if (daRate === null) return "عملة أخرى — أدخل القيمة بالدينار يدويًا";
+    if (cur === "DA") return "القيمة بالدينار نفسها";
+    return (
+      <>
+        تحويل تلقائي — <bdi dir="ltr">1 {cur} = {daRate.toFixed(2)} DA</bdi>{" "}
+        (سعر <bdi dir="ltr">{DA_RATES_DATE}</bdi>)
+      </>
+    );
+  })();
 
   const updateDcp = (key: string, value: string) => {
     setForm((prev) => ({ ...prev, dcp: { ...prev.dcp, [key]: value } }));
@@ -1139,7 +1189,17 @@ function App() {
         code: pr.code ?? "",
       })),
       mandat_enabled: p.mandat_enabled ?? false,
-      mandat: { ...initialMandat, ...(p.mandat ?? {}) },
+      mandat: {
+        ...initialMandat,
+        ...(p.mandat ?? {}),
+        // entries saved before the Mandat had its own names reused Global details
+        client_name: p.mandat?.client_name ?? p.client_name ?? "",
+        transit_name:
+          p.mandat?.transit_name ??
+          (p.transit_name?.trim()
+            ? `TRANSIT ${p.transit_name.trim().replace(/^\s*transit[\s:,-]+/i, "")}`
+            : ""),
+      },
       facture_enabled: p.facture_enabled ?? false,
       facture: restoreFacture(p.facture),
     });
@@ -1187,7 +1247,8 @@ function App() {
       doc_bon: form.doc_bon,
       doc_merge: form.doc_merge,
       dcp_enabled: form.dcp_enabled,
-      dcp: { ...form.dcp },
+      // القيمة بالدينار is shipped exactly as displayed (live conversion)
+      dcp: { ...form.dcp, القيمة_بالدينار: daValue },
       dcp_produits: form.dcp_produits.map((p) => ({
         produit: p.produit,
         code: p.code,
@@ -1267,7 +1328,7 @@ function App() {
   const upper = form.force_uppercase ? { textTransform: "uppercase" as const } : undefined;
 
   return (
-    <div className="app-shell min-h-screen text-slate-100">
+    <div className="app-shell h-full text-slate-100">
       {/* Toast */}
       {toast && (
         <div
@@ -1286,102 +1347,10 @@ function App() {
         </div>
       )}
 
-      <div className="flex min-h-screen">
-        {/* DCP live paper preview — left side, read-only (large screens) */}
-        {showPaper && (
-          <aside className="dcp-aside hidden lg:flex w-[32rem] shrink-0 h-screen flex-col border-r border-slate-800 bg-slate-900/40 backdrop-blur">
-            <div className="px-5 pt-5 pb-3 flex items-center justify-between gap-2" dir="rtl">
-              <h2 className="text-sm font-bold text-white flex items-center gap-2 min-w-0">
-                <Eye size={16} className="text-indigo-400 shrink-0" />
-                معاينة مباشرة — تصريح باستيراد المنتوج
-              </h2>
-              <div className="flex items-center gap-2 shrink-0">
-                <span className="text-[10px] text-slate-500 border border-slate-700 rounded-full px-2 py-0.5">
-                  للقراءة فقط
-                </span>
-                <button
-                  onClick={() => setPaperCollapsed(true)}
-                  className="paper-toggle"
-                  title="إخفاء المعاينة"
-                  aria-label="إخفاء المعاينة"
-                >
-                  <ChevronsLeft size={16} />
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 overflow-y-auto px-5 pb-6">
-              <DcpPaper dcp={form.dcp} />
-            </div>
-          </aside>
-        )}
-
-        {/* Re-open button when the paper is hidden (desktop) */}
-        {paperAvailable && paperCollapsed && (
-          <button
-            onClick={() => setPaperCollapsed(false)}
-            className="paper-reopen hidden lg:flex"
-            title="إظهار المعاينة"
-            aria-label="إظهار المعاينة"
-          >
-            <ChevronsRight size={16} />
-            <span className="paper-reopen-label">معاينة</span>
-          </button>
-        )}
-
-        {/* Phones: >> tab on the left edge slides the paper in */}
-        {paperAvailable && !mobilePaperOpen && (
-          <button
-            onClick={() => setMobilePaperOpen(true)}
-            className="paper-reopen flex lg:hidden"
-            title="إظهار المعاينة"
-            aria-label="إظهار المعاينة"
-          >
-            <ChevronsRight size={16} />
-            <span className="paper-reopen-label">معاينة</span>
-          </button>
-        )}
-
-        {/* Phones: backdrop while the paper drawer is open */}
-        {paperAvailable && mobilePaperOpen && (
-          <div
-            className="drawer-backdrop fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden"
-            onClick={() => setMobilePaperOpen(false)}
-          />
-        )}
-
-        {/* Phones: the DCP paper as a left drawer over the form */}
-        <aside
-          className={`fixed inset-y-0 left-0 z-50 w-[92vw] max-w-md flex flex-col border-r border-slate-800 bg-[#0c101c]/95 backdrop-blur-md transition-transform duration-300 lg:hidden ${
-            paperAvailable && mobilePaperOpen ? "translate-x-0" : "-translate-x-full"
-          }`}
-        >
-          <div className="px-4 pt-4 pb-3 flex items-center justify-between gap-2" dir="rtl">
-            <h2 className="text-sm font-bold text-white flex items-center gap-2 min-w-0">
-              <Eye size={16} className="text-indigo-400 shrink-0" />
-              معاينة مباشرة — تصريح باستيراد المنتوج
-            </h2>
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="text-[10px] text-slate-500 border border-slate-700 rounded-full px-2 py-0.5">
-                للقراءة فقط
-              </span>
-              <button
-                onClick={() => setMobilePaperOpen(false)}
-                className="paper-toggle"
-                title="إخفاء المعاينة"
-                aria-label="إخفاء المعاينة"
-              >
-                <ChevronsLeft size={16} />
-              </button>
-            </div>
-          </div>
-          <div className="flex-1 overflow-y-auto px-4 pb-6">
-            <DcpPaper dcp={form.dcp} />
-          </div>
-        </aside>
-
+      <div className="flex h-full">
         {/* Main column */}
-        <main className="flex-1 min-w-0 h-screen overflow-y-auto">
-          <div className="max-w-3xl mx-auto px-4 sm:px-8 py-6 sm:py-10 flex flex-col min-h-screen">
+        <main className="flex-1 min-w-0 h-full overflow-y-auto">
+          <div className="max-w-3xl mx-auto px-4 sm:px-8 py-6 sm:py-10 flex flex-col min-h-full">
             {/* Header */}
             <header className="mb-6 sm:mb-8 flex items-center gap-3 sm:gap-4">
               <div className="grid place-items-center w-11 h-11 sm:w-12 sm:h-12 shrink-0 rounded-2xl bg-gradient-to-br from-indigo-500 to-blue-600 shadow-lg shadow-indigo-500/30">
@@ -1398,7 +1367,7 @@ function App() {
               {/* History toggle — phones & tablets only */}
               <button
                 onClick={() => setHistoryOpen(true)}
-                className="btn-ghost relative shrink-0 !px-3 !py-2.5 lg:hidden"
+                className="btn-ghost relative shrink-0 !px-3 !py-2.5 lg:!hidden"
                 title="Recent shipments"
                 aria-label="Open recent shipments"
               >
@@ -1740,7 +1709,10 @@ function App() {
               {/* DCP — تصريح باستيراد منتوج */}
               <section className="card" dir="rtl">
                 <label className="flex items-center gap-3 cursor-pointer select-none">
-                  <span className="relative shrink-0">
+                  {/* dir="ltr": the knob must sit LEFT when off and slide RIGHT
+                      when on, like every other toggle — mirrored by the RTL
+                      card it looked "on" while it was actually off. */}
+                  <span className="relative shrink-0" dir="ltr">
                     <input
                       type="checkbox"
                       name="dcp_enabled"
@@ -1749,7 +1721,7 @@ function App() {
                       className="peer sr-only"
                     />
                     <span className="block w-10 h-6 rounded-full bg-slate-700 peer-checked:bg-indigo-500 transition-colors" />
-                    <span className="absolute top-0.5 right-0.5 w-5 h-5 rounded-full bg-white transition-transform peer-checked:-translate-x-4" />
+                    <span className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform peer-checked:translate-x-4" />
                   </span>
                   <span className="flex items-center gap-2.5">
                     <ScrollText size={18} className="text-indigo-400 shrink-0" />
@@ -1758,7 +1730,7 @@ function App() {
                         تصريح باستيراد منتوج
                       </span>
                       <span className="block text-xs text-slate-400 mt-0.5">
-                        DCP — املأ الحقول وشاهد الورقة تتحدّث مباشرة على اليسار
+                        DCP — فعّل الخيار لإظهار الحقول وملئها
                       </span>
                     </span>
                   </span>
@@ -1799,7 +1771,9 @@ function App() {
                                 <DcpField
                                   key={f.key}
                                   def={f}
-                                  value={form.dcp[f.key] ?? ""}
+                                  value={f.autoDa ? daValue : form.dcp[f.key] ?? ""}
+                                  readOnly={f.autoDa && daRate !== null}
+                                  hint={f.autoDa ? daHint : undefined}
                                   dcp={form.dcp}
                                   kbOpen={kbField === f.key}
                                   onChange={updateDcp}
@@ -2121,9 +2095,8 @@ function App() {
                       <p className="mb-4 flex items-start gap-2 text-xs text-amber-300/90 p-3 rounded-lg bg-amber-400/10 border border-amber-400/30">
                         <AlertTriangle size={14} className="mt-0.5 shrink-0" />
                         <span>
-                          Fill <strong>Transit name</strong> and{" "}
-                          <strong>Client name</strong> in “Global details” above — the
-                          Mandat reuses them.
+                          Fill the <strong>Nom</strong> of the entreprise (client) and
+                          of the transitaire (mandataire) below.
                         </span>
                       </p>
                     )}
@@ -2139,32 +2112,26 @@ function App() {
                       </span>
                     </div>
 
-                    {/* Names come from Global details — shown read-only for context */}
+                    {/* Names — free text, independent from Global details */}
                     <div className="grid grid-cols-1 sm:grid-cols-[9rem_1fr_1fr] gap-3 items-center mb-3">
                       <span className="text-xs font-medium text-slate-400 sm:text-right sm:pr-1">
-                        Nom
+                        Nom <span className="text-indigo-400">*</span>
                       </span>
                       <input
-                        className="input opacity-60 cursor-not-allowed"
-                        value={form.client_name}
-                        readOnly
-                        placeholder="— from Global details"
+                        className="input"
+                        value={form.mandat.client_name}
+                        onChange={(e) => updateMandat("client_name", e.target.value)}
+                        placeholder="e.g. SARL ACME IMPORT"
                         style={upper}
-                        aria-label="Nom de l'entreprise (from Global details)"
+                        aria-label="Nom de l'entreprise (client)"
                       />
                       <input
-                        className="input opacity-60 cursor-not-allowed"
-                        value={
-                          form.transit_name.trim()
-                            ? `TRANSIT ${form.transit_name
-                                .trim()
-                                .replace(/^\s*transit[\s:,-]+/i, "")}`
-                            : ""
-                        }
-                        readOnly
-                        placeholder="— from Global details"
+                        className="input"
+                        value={form.mandat.transit_name}
+                        onChange={(e) => updateMandat("transit_name", e.target.value)}
+                        placeholder="e.g. TRANSIT ALPHA"
                         style={upper}
-                        aria-label="Nom du transitaire (from Global details)"
+                        aria-label="Nom du transitaire (mandataire)"
                       />
                     </div>
 
@@ -2577,7 +2544,7 @@ function App() {
                   Every part is optional — complete any one of them to generate: transit
                   documents (names + shipping company + containers + at least one
                   document type), the DCP declaration, the tariff annex, the
-                  Mandat MSC (transit + client name), or the Facture (client name).
+                  Mandat MSC (its entreprise + transitaire names), or the Facture (client name).
                 </p>
               ) : (
                 <p className="text-xs text-slate-400 mb-3 flex flex-wrap items-center gap-x-1.5 gap-y-1">
@@ -2671,7 +2638,7 @@ function App() {
 
         {/* Recent Shipments sidebar — static on desktop, drawer on mobile */}
         <aside
-          className={`fixed inset-y-0 right-0 z-50 w-[86vw] max-w-sm h-screen overflow-y-auto border-l border-slate-800 bg-[#0c101c]/95 backdrop-blur-md transition-transform duration-300 lg:static lg:z-auto lg:w-80 lg:shrink-0 lg:bg-slate-900/50 ${
+          className={`fixed inset-y-0 right-0 z-50 w-[86vw] max-w-sm h-screen lg:h-full overflow-y-auto border-l border-slate-800 bg-[#0c101c]/95 backdrop-blur-md transition-transform duration-300 lg:static lg:z-auto lg:w-80 lg:shrink-0 lg:bg-slate-900/50 ${
             historyOpen ? "translate-x-0" : "translate-x-full"
           } lg:translate-x-0`}
         >
@@ -2841,6 +2808,8 @@ function DcpField({
   onToggleKb,
   onEscape,
   setRef,
+  readOnly = false,
+  hint,
 }: {
   def: DcpFieldDef;
   value: string;
@@ -2850,9 +2819,16 @@ function DcpField({
   onToggleKb: () => void;
   onEscape: () => void;
   setRef: (el: HTMLInputElement | null) => void;
+  /** Computed field (القيمة بالدينار) — shown, not typed. */
+  readOnly?: boolean;
+  /** Small helper line under the input. */
+  hint?: React.ReactNode;
 }) {
   const isDate = def.type === "date";
-  const isSpec = def.currency && (dcp["القيمة_عملة"] || "EUR") === "SPEC";
+  /* A computed field can't be typed in — no Arabic keyboard for it. */
+  const showKb = !isDate && !readOnly;
+  const isSpec =
+    def.currency && (dcp["القيمة_عملة"] || DEFAULT_CURRENCY) === "SPEC";
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
@@ -2873,7 +2849,7 @@ function DcpField({
             <select
               dir="ltr"
               className="input dcp-cur-select"
-              value={dcp["القيمة_عملة"] || "EUR"}
+              value={dcp["القيمة_عملة"] || DEFAULT_CURRENCY}
               onChange={(e) => onChange("القيمة_عملة", e.target.value)}
               title="العملة"
             >
@@ -2903,18 +2879,24 @@ function DcpField({
           <input
             ref={setRef}
             type="text"
-            dir={isDate ? "ltr" : "auto"}
-            inputMode={isDate ? "numeric" : undefined}
+            dir={isDate || readOnly ? "ltr" : "auto"}
+            inputMode={isDate ? "numeric" : def.inputMode}
             maxLength={isDate ? 10 : undefined}
-            className={`input ${!isDate ? "!pl-10" : ""}`}
+            readOnly={readOnly}
+            tabIndex={readOnly ? -1 : undefined}
+            className={`input ${showKb ? "!pl-10" : ""} ${
+              readOnly ? "dcp-computed" : ""
+            }`}
             value={value}
             onChange={handleChange}
             onKeyDown={(e) => {
               if (e.key === "Escape") onEscape();
             }}
-            placeholder={isDate ? "dd/mm/yyyy" : def.placeholder}
+            placeholder={
+              isDate ? "dd/mm/yyyy" : readOnly ? "يُحسب تلقائيًا" : def.placeholder
+            }
           />
-          {!isDate && (
+          {showKb && (
             <button
               type="button"
               tabIndex={-1}
@@ -2933,6 +2915,7 @@ function DcpField({
           <span className="unit-suffix">{def.suffix}</span>
         )}
       </div>
+      {hint && <p className="text-[11px] text-slate-500">{hint}</p>}
     </div>
   );
 }
@@ -3032,207 +3015,6 @@ function RcField({
           <Keyboard size={15} />
         </button>
       </div>
-    </div>
-  );
-}
-
-/* --- Arabic on-screen keyboard --------------------------------------------- */
-function ArabicKeyboard({
-  onKey,
-  onBackspace,
-  onClear,
-  onClose,
-}: {
-  onKey: (ch: string) => void;
-  onBackspace: () => void;
-  onClear: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <div
-      className="ar-kb mt-2"
-      dir="rtl"
-      onMouseDown={(e) => e.preventDefault()}
-    >
-      {AR_KB_ROWS.map((row, i) => (
-        <div key={i} className="flex flex-wrap justify-center gap-1 mb-1">
-          {row.map((k) => (
-            <button
-              key={k}
-              type="button"
-              className="ar-key"
-              onClick={() => onKey(k)}
-            >
-              {k}
-            </button>
-          ))}
-        </div>
-      ))}
-      <div className="flex justify-center gap-1">
-        <button type="button" className="ar-key ar-key-space" onClick={() => onKey(" ")}>
-          مسافة
-        </button>
-        <button type="button" className="ar-key ar-key-fn" onClick={onBackspace} title="حذف">
-          <Delete size={14} />
-        </button>
-        <button type="button" className="ar-key ar-key-fn" onClick={onClear} title="مسح الكل">
-          <Eraser size={14} />
-        </button>
-        <button type="button" className="ar-key ar-key-fn" onClick={onClose} title="إغلاق">
-          <X size={14} />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** س ت value in the live paper: direction-isolated segments laid out
- *  left-to-right — mirrors the inline image of the generated document. */
-function RcValue({ dcp }: { dcp: Record<string, string> }) {
-  const [p1, p2, p3, letter, p4] = rcParts(dcp);
-  if (!(p1 || p2 || p3 || p4)) {
-    const legacy = (dcp["رقم_س_ت"] ?? "").trim();
-    return legacy ? (
-      <span className="dcp-val" dir="auto">
-        {legacy}
-      </span>
-    ) : (
-      <span className="dcp-dots" style={{ minWidth: 40 }} />
-    );
-  }
-  const iso: React.CSSProperties = { unicodeBidi: "isolate", direction: "ltr" };
-  return (
-    <span className="dcp-val" dir="ltr" style={{ unicodeBidi: "isolate" }}>
-      <span style={iso}>
-        {p1}/{p2}-{p3}
-      </span>
-      <span style={iso}>{letter}</span>
-      <span style={iso}>{p4}</span>
-    </span>
-  );
-}
-
-/* --- DCP live paper preview (read-only) ------------------------------------ */
-function DcpPaper({ dcp }: { dcp: Record<string, string> }) {
-  const val = (k: string) => (dcp[k] ?? "").trim();
-  const date = (k: string) => fmtDateDMY(val(k));
-  const currency = resolveCurrency(dcp);
-
-  const F = ({ v, w }: { v: string; w?: number }) =>
-    v ? (
-      <span className="dcp-val" dir="auto">
-        {v}
-      </span>
-    ) : (
-      <span className="dcp-dots" style={w ? { minWidth: w } : undefined} />
-    );
-
-  return (
-    <div className="dcp-paper" dir="rtl">
-      {/* Header — mirrors the template's own alignment */}
-      <div className="dcp-h1">الجمهورية الجزائرية الديمقراطية الشعبية</div>
-      <div className="dcp-h2">وزارة التجارة</div>
-      <div className="dcp-h2">مديرية التجارة لولاية عنابة</div>
-      <div className="dcp-h2">مفتشية الحدود لميناء عنابة</div>
-      <div className="dcp-title">تصريح باستيراد المنتوج</div>
-      <div className="dcp-numline">رقم :...../ المؤرخ :....../......./..........</div>
-      <div className="dcp-decree">
-        المادة3 من المرسوم التنفيذي رقم05-467مؤرخ في8دي القعدة عام1426الموافق10 ديسمبر في2005
-      </div>
-
-      {/* Body */}
-      <div className="dcp-body">
-        <PaperLine ins="1) اللقب والاسم أو شركة المتعامل">
-          (1) المستورد: <F v={val("المستورد")} />
-        </PaperLine>
-        <PaperLine ins="2) العنوان الحقيقي للمتعامل المعني">
-          رقم وتاريخ س ت: <RcValue dcp={dcp} /> بتاريخ: <F v={date("تاريخ_الاستراد")} w={40} />
-        </PaperLine>
-        <PaperLine ins="3) بيّن الطبيعة الحقيقية للمنتوج">
-          (2) العنوان: <F v={val("العنوان")} />
-        </PaperLine>
-        <PaperLine ins="4) بيّن كيفية عرض المنتوج">
-          (3) تعيين المنتوج: <F v={val("تعيين_المنتوج")} />
-        </PaperLine>
-        <PaperLine ins="5) بيّن عدد الطروز">
-          (4) معروض في: <F v={val("معروض_في")} w={35} /> (5) متكون من: <F v={val("متكون_من")} w={35} />
-        </PaperLine>
-        <PaperLine ins="6) الكمية بالأطنان">
-          (6) الكمية: <F v={val("الكمية")} w={40} /> طن (7) رقم التعريفة: انظر الملحق
-        </PaperLine>
-        <PaperLine ins="7) التعريفة الجمركية بـ8 أرقام القيمة">
-          (8) فاتورة الشراء: <F v={val("فاتورة_الشراء")} w={35} /> (9) القيمة:{" "}
-          {currency ? (
-            <span className="dcp-unit" dir="ltr">
-              {currency}
-            </span>
-          ) : null}{" "}
-          <F v={val("القيمة")} w={35} />
-        </PaperLine>
-        <PaperLine ins="8) بيّن الرقم والتاريخ">
-          بتاريخ: <F v={date("الفاتورة_تاريخ")} w={40} /> <span className="dcp-gap" />{" "}
-          {val("القيمة_بالدينار") ? (
-            <span className="dcp-val" dir="ltr">
-              {val("القيمة_بالدينار")} DA
-            </span>
-          ) : (
-            <>
-              <span className="dcp-dots" style={{ minWidth: 45 }} />{" "}
-              <span className="dcp-unit" dir="ltr">
-                DA
-              </span>
-            </>
-          )}
-        </PaperLine>
-        <PaperLine ins="9) القيمة بالدينار الجزائري">
-          (10) الصانع: <F v={val("الصانع")} />
-        </PaperLine>
-        <PaperLine ins="10) اللقب والاسم أو اسم شركة المنتج">
-          (11) مكان المصدر: <F v={val("مكان_المصدر")} />
-        </PaperLine>
-        <PaperLine ins="11) بيّن البلد الأصلي للمنتوج أو مكان التصنيع">
-          (12) رقم الحصة: <span className="dcp-dots" />
-        </PaperLine>
-        <PaperLine ins="12) علامة التعريف والمعلومات المتعلقة بشفرة المنتوج">
-          (13) اشهاد المنتوج: ....شهادة المنشأ.... المراقبات التي تعرض لها المنتوج: شهادة المطابقة....
-        </PaperLine>
-        <PaperLine ins="13) مرجع الاشهاد المحتمل للمنتوج">
-          (14) شركة النقل: <F v={val("مرجع_النقل")} />
-        </PaperLine>
-        <PaperLine ins="14) مرجع وسائل النقل">
-          (15) وثائق النقل: <F v={val("وثائق_النقل")} />
-        </PaperLine>
-        <PaperLine ins="15) مرجع الوثائق المرفقة للمنتوج">
-          (16) الانطلاق من: <F v={val("الانطلاق_من")} w={35} /> بتاريخ: <F v={date("تاريخ_الانطلاق")} w={40} />
-        </PaperLine>
-        {/* العبور / الوصول are static text in the template — shown as fixed dots */}
-        <PaperLine ins="16) بيّن المكان والتاريخ">
-          (16) العبور: <span className="dcp-dots" style={{ minWidth: 35 }} /> (16)
-          الوصول: <span className="dcp-dots" style={{ minWidth: 35 }} />
-        </PaperLine>
-      </div>
-
-      {/* Footer */}
-      <div className="dcp-footer">
-        <span>تأشير وختم المستورد</span>
-        <span>التاريخ: &nbsp;/&nbsp;&nbsp;/&nbsp;</span>
-        <span>إشعار بالاستلام لمفتشية الحدود</span>
-      </div>
-    </div>
-  );
-}
-
-function PaperLine({
-  ins,
-  children,
-}: {
-  ins?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="dcp-line">
-      <span className="dcp-ins">{ins ?? ""}</span>
-      <span className="dcp-fld">{children}</span>
     </div>
   );
 }

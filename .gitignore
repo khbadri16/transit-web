@@ -22,3 +22,6 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+
+# Files the Claude desktop app saves into this folder (previews, sample PDFs)
+Claude outputs/

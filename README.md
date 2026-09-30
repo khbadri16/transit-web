@@ -8,10 +8,17 @@ with an optional single merged Word file), the DCP declaration (تصريح با�
 المنتوج — generated as a fixed-layout PDF so it renders identically in every
 Word/LibreOffice version), the tariff annex (ملحق التعريفات الجمركية — filled
 by hand or by AI from an invoice image/PDF), the Mandat MSC (autorisation aux
-mandataires — a toggle-gated letter that reuses the transit/client names and is
+mandataires — a toggle-gated letter with its own entreprise/transitaire names, and is
 dated on the day it is generated) and the Facture de transit (toggle-gated,
 fully independent, with live TVA 9% / TAUX / TOTAL TTC calculations — always a
 standalone file, never merged).
+
+A second page, **Étiquetage** (left sidebar, `#/etiquetage`), is a small label
+editor: product labels (الاسم / العنوان / المنتوج / التركيب / المنشأ / علامة
+الصيانة) are placed and resized freely on A4 sheets, then exported as one PDF
+with a dashed cut line and scissors around every label (`POST /api/labels`,
+drawn by `frontend/api/labels_pdf.py`). The layout is computed in the browser
+with the same font as the PDF (`public/fonts/PlexSansArabic-Bold.ttf`).
 
 - `frontend/` — Vite + React + TypeScript + Tailwind CSS v4
   - `frontend/api/index.py` — the FastAPI serverless function

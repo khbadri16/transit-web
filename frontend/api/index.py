@@ -9,6 +9,7 @@ Routes are prefixed with /api because Vercel rewrites /api/* to this file
 
     GET  /api/health    -> health check
     POST /api/generate  -> JSON payload in, documents.zip out
+    POST /api/labels    -> Étiquetage labels in, etiquettes.pdf out
 
 Local development (from Web/frontend):
     pip install -r requirements.txt
@@ -21,7 +22,7 @@ import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Literal
+from typing import Dict, List, Literal, Optional
 
 from docxtpl import DocxTemplate
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
@@ -108,8 +109,10 @@ class Produit(BaseModel):
 
 
 class Mandat(BaseModel):
-    """Autorisation aux mandataires (MSC). client_name / transit_name are not
-    here — they are reused from the transit part of the form."""
+    """Autorisation aux mandataires (MSC). Fully independent from the transit
+    part: the entreprise and transitaire names are typed in the Mandat part."""
+    client_name: str = ""       # Nom de l'entreprise (client)
+    transit_name: str = ""      # Transitaire (mandataire) — printed as typed
     client_username: str = ""   # personne à contacter, côté entreprise
     client_email: str = ""
     client_address: str = ""
@@ -665,12 +668,17 @@ def generate(req: GenerateRequest) -> StreamingResponse:
         if p.produit.strip() or p.code.strip()
     ]
     annex_ready = len(produits) > 0
-    # The Mandat reuses client_name / transit_name from the transit part, so it
-    # only needs those two — not the containers.
+    # The Mandat carries its own entreprise / transitaire names (typed in the
+    # Mandat part) — nothing from the transit part is needed.
+    mandat_client_name = req.mandat.client_name.strip()
+    mandat_transit_name = req.mandat.transit_name.strip()
+    if force_upper:
+        mandat_client_name = mandat_client_name.upper()
+        mandat_transit_name = mandat_transit_name.upper()
     mandat_ready = (
         req.mandat_enabled
-        and bool(client_name)
-        and bool(req.transit_name.strip())
+        and bool(mandat_client_name)
+        and bool(mandat_transit_name)
     )
 
     # The Facture is fully independent — it carries its own client identity.
@@ -684,7 +692,8 @@ def generate(req: GenerateRequest) -> StreamingResponse:
             status_code=400,
             detail="Nothing to generate: complete at least one part — transit "
                    "documents (names + containers), the DCP declaration, the "
-                   "tariff annex, the Mandat MSC (client + transit name), or "
+                   "tariff annex, the Mandat MSC (entreprise + transitaire "
+                   "names), or "
                    "the Facture (client name).",
         )
 
@@ -779,7 +788,7 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                     raw[field] = value
 
                 # القيمة is shipped together with the selected currency
-                currency = str(dcp_raw.get("القيمة_عملة", "") or "").strip() or "EUR"
+                currency = str(dcp_raw.get("القيمة_عملة", "") or "").strip() or "USD"
                 if currency == "SPEC":
                     currency = str(dcp_raw.get("القيمة_عملة_نص", "") or "").strip()
                 if raw["القيمة"] and currency:
@@ -790,6 +799,10 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                 # الكمية is always in tonnes
                 if raw["الكمية"]:
                     raw["الكمية"] += " طن"
+                # متكون من: only the number is typed — the unit طرد is static
+                # (older history entries may already contain it: never twice)
+                if raw["متكون_من"] and not raw["متكون_من"].endswith(("طرد", "طرود")):
+                    raw["متكون_من"] += " طرد"
 
                 rc_parts = tuple(
                     str(dcp_raw.get(k, "") or "").strip() for k in RC_PART_KEYS
@@ -812,8 +825,8 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                 )
 
             # PART 4 — Mandat MSC (autorisation aux mandataires).
-            # client_name / transit_name come from the transit part (already
-            # uppercased when the toggle is on); the contact details are kept
+            # The entreprise / transitaire names are the Mandat's own fields
+            # (uppercased when the toggle is on); the contact details are kept
             # exactly as typed — uppercasing an e-mail address would be wrong.
             # The letter is dated on the day it is generated.
             if mandat_ready:
@@ -822,14 +835,14 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                     "MANDAT_MSC_GENERATED.docx",
                     render_to_bytes(TPL_MANDAT, {
                         "date": datetime.now().strftime("%d/%m/%Y"),
-                        "client_name": client_name,
+                        "client_name": mandat_client_name,
                         "client_username": m.client_username.strip(),
                         "client_email": m.client_email.strip(),
                         "client_address": m.client_address.strip(),
                         "client_phone": m.client_phone.strip(),
                         "client_rc": m.client_rc.strip(),
                         "client_nif": m.client_nif.strip(),
-                        "transit_name": transit_lettre,
+                        "transit_name": mandat_transit_name,
                         "transit_username": m.transit_username.strip(),
                         "transit_email": m.transit_email.strip(),
                         "transit_address": m.transit_address.strip(),
@@ -864,6 +877,83 @@ def generate(req: GenerateRequest) -> StreamingResponse:
         media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="documents_{stamp}.zip"',
+        },
+    )
+
+
+# --------------------------------------------------------------------------
+# Étiquetage — product labels as a print-and-cut PDF (see api/labels_pdf.py)
+# --------------------------------------------------------------------------
+
+
+class LabelLine(BaseModel):
+    text: str = ""
+    x_right: float = 0      # mm — right edge of the (RTL) line
+    baseline: float = 0     # mm — from the top of the page
+
+
+class LabelRect(BaseModel):
+    x: float = 0
+    y: float = 0
+    w: float = 0
+    h: float = 0
+
+
+class LabelScissors(BaseModel):
+    cx: float = 0
+    cy: float = 0
+    size: float = 4
+
+
+class LabelBox(BaseModel):
+    """One label, fully laid out by the browser (millimetres)."""
+    page: int = 0
+    x: float = 0
+    y: float = 0
+    w: float = 0
+    h: float = 0
+    size_pt: float = 8
+    max_width: float = 0
+    lines: List[LabelLine] = Field(default_factory=list)
+    care: Optional[LabelRect] = None
+    scissors: Optional[LabelScissors] = None
+
+
+class LabelsRequest(BaseModel):
+    pages: int = 1
+    labels: List[LabelBox] = Field(default_factory=list)
+
+
+@app.post("/api/labels")
+def generate_labels(req: LabelsRequest) -> StreamingResponse:
+    """Étiquetage page -> one PDF with every label, ready to print and cut."""
+    if not req.labels:
+        raise HTTPException(status_code=400, detail="لا توجد ملصقات.")
+    try:
+        try:
+            from api.labels_pdf import build_labels_pdf
+        except ImportError:  # loaded outside the package context
+            import sys
+            if str(BASE_DIR) not in sys.path:
+                sys.path.append(str(BASE_DIR))
+            from labels_pdf import build_labels_pdf
+
+        pdf_bytes = build_labels_pdf(
+            req.pages,
+            [lab.model_dump() if hasattr(lab, "model_dump") else lab.dict()
+             for lab in req.labels],
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Label PDF generation failed: {exc}"
+        ) from exc
+
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="etiquettes_{stamp}.pdf"',
         },
     )
 

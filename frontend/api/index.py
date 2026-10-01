@@ -10,6 +10,7 @@ Routes are prefixed with /api because Vercel rewrites /api/* to this file
     GET  /api/health    -> health check
     POST /api/generate  -> JSON payload in, documents.zip out
     POST /api/labels    -> Étiquetage labels in, etiquettes.pdf out
+    POST /api/tracking/akkon -> Akkon Lines BL lookup (vessel, ETA, ...)
 
 Local development (from Web/frontend):
     pip install -r requirements.txt
@@ -956,6 +957,38 @@ def generate_labels(req: LabelsRequest) -> StreamingResponse:
             "Content-Disposition": f'attachment; filename="etiquettes_{stamp}.pdf"',
         },
     )
+
+
+# --------------------------------------------------------------------------
+# Tracking — Akkon Lines automatic BL check (see api/akkon_tracking.py).
+# The other shipping lines are opened from the browser with the BL ready.
+# --------------------------------------------------------------------------
+
+
+class AkkonTrackRequest(BaseModel):
+    bl: str
+    country: str = ""   # Akkon dropdown value ("CHINA|SBOAKKONCHINA"), "" = auto
+
+
+@app.post("/api/tracking/akkon")
+def tracking_akkon(req: AkkonTrackRequest):
+    try:
+        try:
+            from api.akkon_tracking import AkkonError, track_akkon
+        except ImportError:  # loaded outside the package context
+            import sys
+            if str(BASE_DIR) not in sys.path:
+                sys.path.append(str(BASE_DIR))
+            from akkon_tracking import AkkonError, track_akkon
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    try:
+        return track_akkon(req.bl, req.country)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AkkonError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def _ai_error_detail(exc: Exception) -> str:

@@ -20,6 +20,14 @@ with a dashed cut line and scissors around every label (`POST /api/labels`,
 drawn by `frontend/api/labels_pdf.py`). The layout is computed in the browser
 with the same font as the PDF (`public/fonts/PlexSansArabic-Bold.ttf`).
 
+A third page, **Tracking** (`#/tracking`), keeps the list of BLs being
+followed (saved in the browser; Export / Import moves it between computers).
+AKKON BLs are checked automatically by the server (`POST /api/tracking/akkon`,
+`frontend/api/akkon_tracking.py`, which posts Akkon's public tracking form and
+reads its result table). MSC, MAERSK and COSCO open their own tracking page
+with the BL already searched; CMA CGM and HMM open with the BL copied, and the
+"⚡ Fill BL" bookmark fills and searches it on their page.
+
 - `frontend/` — Vite + React + TypeScript + Tailwind CSS v4
   - `frontend/api/index.py` — the FastAPI serverless function
   - `frontend/api/templates/` — the .docx templates

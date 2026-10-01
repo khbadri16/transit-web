@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { FileText, Ship, Tag } from "lucide-react";
+import { Container, FileText, Ship, Tag } from "lucide-react";
 import App from "./App";
 import Etiquetage from "./Etiquetage";
+import Tracking from "./Tracking";
 
 /* --------------------------------------------------------------------------
  * App shell — left sidebar (desktop) / top tabs (phones) switching between
@@ -11,16 +12,17 @@ import Etiquetage from "./Etiquetage";
  * page lives in the URL hash (#/etiquetage) so a refresh keeps it.
  * ------------------------------------------------------------------------ */
 
-type Page = "documents" | "etiquetage";
+type Page = "documents" | "etiquetage" | "tracking";
 
-const pageFromHash = (): Page =>
-  window.location.hash.replace(/^#\/?/, "").toLowerCase() === "etiquetage"
-    ? "etiquetage"
-    : "documents";
+const pageFromHash = (): Page => {
+  const h = window.location.hash.replace(/^#\/?/, "").toLowerCase();
+  return h === "etiquetage" || h === "tracking" ? h : "documents";
+};
 
 const NAV: { page: Page; label: string; sub: string; icon: typeof FileText }[] = [
   { page: "documents", label: "Documents", sub: "الوثائق", icon: FileText },
   { page: "etiquetage", label: "Étiquetage", sub: "الملصقات", icon: Tag },
+  { page: "tracking", label: "Tracking", sub: "التتبع", icon: Container },
 ];
 
 export default function Shell() {
@@ -34,7 +36,7 @@ export default function Shell() {
 
   const go = (p: Page) => {
     setPage(p);
-    const hash = p === "etiquetage" ? "#/etiquetage" : "#/";
+    const hash = p === "documents" ? "#/" : `#/${p}`;
     if (window.location.hash !== hash) window.history.replaceState(null, "", hash);
   };
 
@@ -68,7 +70,7 @@ export default function Shell() {
             key={p}
             type="button"
             onClick={() => go(p)}
-            className={`flex-1 h-9 inline-flex items-center justify-center gap-2 rounded-lg text-sm font-semibold transition-colors ${
+            className={`flex-1 h-9 inline-flex items-center justify-center gap-1.5 rounded-lg text-[13px] font-semibold transition-colors ${
               page === p
                 ? "bg-indigo-500/20 text-indigo-100 border border-indigo-400/50"
                 : "text-slate-400 border border-transparent"
@@ -86,6 +88,9 @@ export default function Shell() {
         </div>
         <div className={page === "etiquetage" ? "h-full" : "hidden"}>
           <Etiquetage active={page === "etiquetage"} />
+        </div>
+        <div className={page === "tracking" ? "h-full" : "hidden"}>
+          <Tracking active={page === "tracking"} />
         </div>
       </div>
     </div>

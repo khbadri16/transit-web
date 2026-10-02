@@ -1,28 +1,30 @@
 import { useEffect, useState } from "react";
-import { Container, FileText, Ship, Tag } from "lucide-react";
+import { CalendarDays, Container, FileText, Ship, Tag } from "lucide-react";
 import App from "./App";
 import Etiquetage from "./Etiquetage";
 import Tracking from "./Tracking";
+import VisitDay from "./VisitDay";
 
 /* --------------------------------------------------------------------------
  * App shell — left sidebar (desktop) / top tabs (phones) switching between
- * the document generator and the Étiquetage (labels) page.
+ * the pages: Documents, Étiquetage (labels), Tracking and Visit day.
  *
  * Both pages stay mounted: switching never loses what was typed. The current
  * page lives in the URL hash (#/etiquetage) so a refresh keeps it.
  * ------------------------------------------------------------------------ */
 
-type Page = "documents" | "etiquetage" | "tracking";
+type Page = "documents" | "etiquetage" | "tracking" | "visit-day";
 
 const pageFromHash = (): Page => {
   const h = window.location.hash.replace(/^#\/?/, "").toLowerCase();
-  return h === "etiquetage" || h === "tracking" ? h : "documents";
+  return h === "etiquetage" || h === "tracking" || h === "visit-day" ? h : "documents";
 };
 
 const NAV: { page: Page; label: string; sub: string; icon: typeof FileText }[] = [
   { page: "documents", label: "Documents", sub: "الوثائق", icon: FileText },
   { page: "etiquetage", label: "Étiquetage", sub: "الملصقات", icon: Tag },
   { page: "tracking", label: "Tracking", sub: "التتبع", icon: Container },
+  { page: "visit-day", label: "Visit day", sub: "المعاينة", icon: CalendarDays },
 ];
 
 export default function Shell() {
@@ -77,7 +79,7 @@ export default function Shell() {
             }`}
             aria-current={page === p ? "page" : undefined}
           >
-            <Icon size={16} /> {label}
+            <Icon size={16} className="shrink-0 max-[459px]:hidden" /> <span className="truncate">{label}</span>
           </button>
         ))}
       </nav>
@@ -91,6 +93,9 @@ export default function Shell() {
         </div>
         <div className={page === "tracking" ? "h-full" : "hidden"}>
           <Tracking active={page === "tracking"} />
+        </div>
+        <div className={page === "visit-day" ? "h-full" : "hidden"}>
+          <VisitDay active={page === "visit-day"} />
         </div>
       </div>
     </div>

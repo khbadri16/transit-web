@@ -297,37 +297,44 @@ def build_dcp_pdf(fields: Dict[str, str],
 
     # ---------------- body ----------------
     # Long single-value fields (المستورد, العنوان, الصانع) wrap onto a second
-    # line instead of running off the paper. Each wrap adds WRAP_GAP of room
-    # so everything below it slides down and the continuation is never squeezed.
+    # line instead of running off the paper, like a normal paragraph: line 1
+    # uses the whole free line, line 2 continues directly below it and starts
+    # on the SAME edge as line 1 — the text's own direction decides which edge
+    # (Arabic -> right, Latin -> left). Each wrap adds WRAP_GAP of room so
+    # everything below it slides down.
     WRAP_GAP = 14        # vertical room a wrap adds to the rows beneath it
     CONT_DY = 16         # continuation line sits this far below its main line
-    CONT_INSET = 10      # continuation nudged left, clear of both lines
+    MIN_WRAP_SCALE = 0.45
 
-    def _vw(s: str) -> float:                       # value width at value size
-        d.value_size()
-        return d.w(_value_vis(s)) + VALUE_BOLDEN
+    def _vw(s: str, scale: float = 1.0) -> float:   # value width at value size
+        d.size((d.body_pt + VALUE_PT_DELTA) * scale)
+        w = d.w(_value_vis(s)) + VALUE_BOLDEN
+        d.form_size()
+        return w
 
     def _wrap(label: str, value: str, x_start: float = X_FORM):
-        """(line1, line2|None, scale): if the value overruns its slot, split it
-        into two BALANCED lines (near-equal width) and, only if a line is still
-        too wide, shrink just this field's value font so both lines fit."""
+        """(line1, line2|None, scale): if the value overruns its slot, fill
+        line 1 with as many words as fit and put the rest on line 2; only if
+        line 2 (or a single huge word) is still too wide, shrink just this
+        field's value font until both lines fit."""
         d.form_size()
         budget = (x_start - d.w(_vis(label))) - X_LEFT
-        d.form_size()
         if not value or _vw(value) <= budget:
             return value, None, 1.0
-        # balanced split: grow line 1 until it passes half the total width
         words = value.split()
-        half = _vw(value) / 2
-        first = [words[0]]
-        for word in words[1:]:
-            if _vw(" ".join(first + [word])) > half:
-                break
-            first.append(word)
-        line1, line2 = " ".join(first), " ".join(words[len(first):])
-        widest = max(_vw(line1), _vw(line2) if line2 else 0)
-        scale = min(1.0, budget / widest) if widest else 1.0
-        return line1, (line2 or None), round(scale, 3)
+        scale = 1.0
+        while True:
+            first: List[str] = []
+            for word in words:
+                if first and _vw(" ".join(first + [word]), scale) > budget:
+                    break
+                first.append(word)
+            line1, line2 = " ".join(first), " ".join(words[len(first):])
+            fits = _vw(line1, scale) <= budget and (
+                not line2 or _vw(line2, scale) <= budget)
+            if fits or scale <= MIN_WRAP_SCALE:
+                return line1, (line2 or None), round(scale, 3)
+            scale = max(MIN_WRAP_SCALE, scale * 0.96)
 
     LBL_IMPORT, LBL_ADDR, LBL_MAKER = "(1)المستورد:  ", "(2)العنوان: ", "(10)الصانع:"
     imp1, imp2, imp_s = _wrap(LBL_IMPORT, f.get("المستورد", ""))
@@ -378,10 +385,10 @@ def build_dcp_pdf(fields: Dict[str, str],
     # keeps every row inside the page (long values shrink the whole column
     # evenly instead of breaking the layout)
     ROWS: List[tuple] = [
-        (268, [("t", LBL_IMPORT), ("v", imp1, 200, imp_s)], X_FORM),
+        (268, [("t", LBL_IMPORT)] + ([] if imp2 else [("v", imp1, 200, imp_s)]), X_FORM),
         (292, [("t", "رقم وتاريخ س ت:"), ("rc", rc_parts, 95), ("g", 4),
                ("t", "بتاريخ:"), ("v", f.get("تاريخ_الاستراد", ""), 60)], X_FORM),
-        (316, [("t", LBL_ADDR), ("v", adr1, 200, adr_s)], X_FORM),
+        (316, [("t", LBL_ADDR)] + ([] if adr2 else [("v", adr1, 200, adr_s)]), X_FORM),
         (340, [("t", "(3)تعيين المنتوج:"), ("v", f.get("تعيين_المنتوج", ""), 185)], X_FORM),
         (364, [("t", "(4)معروض في: "), ("v", f.get("معروض_في", ""), 58), ("g", 8),
                ("t", "(5)متكون من : "), ("v", f.get("متكون_من", ""), 58)], X_FORM),
@@ -391,7 +398,7 @@ def build_dcp_pdf(fields: Dict[str, str],
                ("t", "(9)القيمة: "), ("v", f.get("القيمة", ""), 76)], X_FORM),
         (436, [("t", "بتاريخ: "), ("v", f.get("الفاتورة_تاريخ", ""), 60), ("g", 34),
                ("v", f.get("القيمة_بالدينار", ""), 92)], X_FORM - 40),
-        (462, [("t", LBL_MAKER), ("v", mak1, 195, mak_s)], X_FORM),
+        (462, [("t", LBL_MAKER)] + ([] if mak2 else [("v", mak1, 195, mak_s)]), X_FORM),
         (487, [("t", "(11) مكان المصدر : "), ("v", f.get("مكان_المصدر", ""), 175)], X_FORM),
         (511, [("t", "(12) رقم الحصة:"), ("v", "", 205)], X_FORM),
         (536, [("t", "(13) اشهاد المنتوج :"), ("t", ".....شهادة المنشأ"), ("v", "", 105)], X_FORM),
@@ -410,26 +417,41 @@ def build_dcp_pdf(fields: Dict[str, str],
                ("t", "(16)الوصول: "), ("v", "عنابة", 0)], X_FORM),
     ]
 
-    # continuation lines for the wrapped fields, positioned just under their
-    # main line (which already carries the shifts of any wrap above it)
-    d.form_size()
-    CONTINUATIONS: List[tuple] = []
-    for base_y, label, second, scale in ((268, LBL_IMPORT, imp2, imp_s),
-                                         (316, LBL_ADDR, adr2, adr_s),
-                                         (462, LBL_MAKER, mak2, mak_s)):
-        if second:
-            CONTINUATIONS.append((
-                _y(base_y) + CONT_DY,
-                [("v", second, 0, scale)],
-                X_FORM - d.w(_vis(label)) - CONT_INSET,
-            ))
+    WRAPPED = [(base_y, label, first, second, scale)
+               for base_y, label, first, second, scale in (
+                   (268, LBL_IMPORT, imp1, imp2, imp_s),
+                   (316, LBL_ADDR, adr1, adr2, adr_s),
+                   (462, LBL_MAKER, mak1, mak2, mak_s))
+               if second]
+
+    def _continuations() -> List[tuple]:
+        """Both lines of each wrapped field, line 2 right under line 1 and
+        starting on the same edge. Arabic text: both lines start at the RIGHT
+        edge (next to the label). Latin text: both lines start at the same
+        LEFT edge, the block sitting against the label."""
+        out: List[tuple] = []
+        for base_y, label, first, second, scale in WRAPPED:
+            d.form_size()
+            label_left = X_FORM - d.w(_vis(label))
+            w1, w2 = _vw(first, scale), _vw(second, scale)
+            if _AR_RE.search(first + second):
+                x1 = x2 = label_left
+            else:
+                left = max(X_LEFT, label_left - max(w1, w2))
+                x1, x2 = left + w1, left + w2
+            out.append((_y(base_y), [("v", first, 0, scale)], x1))
+            out.append((_y(base_y) + CONT_DY, [("v", second, 0, scale)], x2))
+        return out
+
+    CONTINUATIONS = _continuations()
 
     # one uniform size for the whole column; iterate because entered data
     # keeps a fixed size bonus over the shrinking body size
     d.body_pt = BODY_PT
     for _ in range(3):
         shrink = 1.0
-        for _, tokens, x_start in ROWS + CONTINUATIONS:
+        # wrapped fields size themselves (see _wrap) — only ROWS count here
+        for _, tokens, x_start in ROWS:
             width = _row_width(d, tokens)
             budget = x_start - X_LEFT
             if width > budget:
@@ -437,6 +459,7 @@ def build_dcp_pdf(fields: Dict[str, str],
         if shrink >= 0.999 or d.body_pt <= 9.0:
             break
         d.body_pt = max(d.body_pt * shrink, 9.0)
+    CONTINUATIONS = _continuations()   # final positions at the final size
     for y, tokens, x_start in ROWS:
         _draw_row(d, _y(y), tokens, x_start)
     for abs_y, tokens, x_start in CONTINUATIONS:

@@ -2,7 +2,7 @@
 Étiquetage — product labels (ملصقات) as a print-and-cut PDF
 ------------------------------------------------------------
 The browser does the whole layout of every label (font size, line breaks,
-baselines, care-symbol box, scissors position) with the SAME font as here
+baselines, care-symbol box) with the SAME font as here
 (IBM Plex Sans Arabic Bold) and sends absolute positions in millimetres.
 This module only draws them, so the PDF matches the screen:
 
@@ -10,8 +10,7 @@ This module only draws them, so the PDF matches the screen:
     right-aligned, horizontally squeezed if a line is a hair too wide;
   * the care symbols (علامة الصيانة) — the static drawing copied from
     TIKTAJ I.docx, same geometry as the SVG in src/Etiquetage.tsx;
-  * the dashed cut line around each label with a small pair of scissors
-    sitting on it.
+  * the dashed cut line around each label.
 """
 
 import io
@@ -55,9 +54,6 @@ CARE_SHAPES = [
     ("ellipse", (172.5, 180, 172.5, 150)),
 ]
 
-# Scissors: Lucide "scissors" mirrored to point left (24 × 24 units, stroke 2)
-SCISSORS_CIRCLES = [(18, 6, 3), (18, 18, 3)]
-SCISSORS_LINES = [(15.88, 8.12, 12, 12), (4, 4, 15.88, 15.88), (9.2, 14.8, 4, 20)]
 
 _AR_RE = re.compile("[֐-ࣿﭐ-﷿ﹰ-﻿]")
 _reshaper = arabic_reshaper.ArabicReshaper({"delete_harakat": False})
@@ -109,24 +105,6 @@ def _draw_care(pdf: FPDF, x: float, y: float, w: float, h: float) -> None:
                 cx, cy, rx, ry = g
                 x0, y0 = P(cx - rx, cy - ry)
                 pdf.ellipse(x0, y0, 2 * rx * sx, 2 * ry * sy, style="D")
-
-
-def _draw_scissors(pdf: FPDF, cx: float, cy: float, size: float) -> None:
-    u = size / 24.0
-    left, top = cx - size / 2, cy - size / 2
-    # white patch: the dashed line stops under the scissors
-    with pdf.local_context(fill_color=(255, 255, 255)):
-        pdf.rect(left - 0.5, top, size + 1.0, size, style="F")
-    with pdf.local_context(
-        draw_color=CUT_INK,
-        line_width=2 * u,
-        stroke_cap_style="ROUND",
-        stroke_join_style="ROUND",
-    ):
-        for (ccx, ccy, r) in SCISSORS_CIRCLES:
-            pdf.ellipse(left + (ccx - r) * u, top + (ccy - r) * u, 2 * r * u, 2 * r * u, style="D")
-        for (x1, y1, x2, y2) in SCISSORS_LINES:
-            pdf.line(left + x1 * u, top + y1 * u, left + x2 * u, top + y2 * u)
 
 
 def build_labels_pdf(pages: int, labels: Iterable[dict]) -> bytes:
@@ -189,12 +167,6 @@ def build_labels_pdf(pages: int, labels: Iterable[dict]) -> bytes:
                 pdf.set_dash_pattern(dash=CUT_DASH, gap=CUT_GAP)
                 pdf.rect(x, y, w, h, style="D")
                 pdf.set_dash_pattern()
-
-            # 3 — scissors sitting on the top edge
-            sc = lab.get("scissors")
-            if sc:
-                size = max(2.0, min(8.0, _num(sc.get("size"), 4.0)))
-                _draw_scissors(pdf, _num(sc.get("cx"), x + w - 8), _num(sc.get("cy"), y), size)
 
     out = io.BytesIO()
     pdf.output(out)

@@ -66,10 +66,11 @@ const CARE_RATIO = CARE_W / CARE_HU;
 const CARE_H = 1.15; // symbol height, × font size
 const CARE_MIN_SCALE = 0.75; // auto-fit keeps the symbols at least this big
 
-/* ---- cut line + scissors ------------------------------------------------ */
+/* ---- cut line (dashed border of each label) ------------------------------ */
 const CUT_DASH = 1.6;
 const CUT_GAP = 1.1;
 const CUT_W = 0.25;
+const CUT_INK = "#1f2937"; // same ink as the PDF (api/labels_pdf.py CUT_INK)
 
 const STORAGE_KEY = "etiquetage_v1";
 const HISTORY_MAX = 60;
@@ -218,13 +219,15 @@ function autoArrange(sheet: Sheet): Sheet {
   return { pages: Math.max(sheet.pages, page + 1), labels: out };
 }
 
-/** Scissors size + centre (label-relative, mm) — sent as-is to the PDF. */
+/** The labels used to carry a small scissors icon on their top edge. The icon
+ *  is gone, but its size still sets the top padding so the text keeps exactly
+ *  the same place on the label. */
 const scissorsFor = (w: number, h: number) => {
   const size = clamp(Math.min(w, h) * 0.13, 3.2, 5);
   return { size, cx: w - size * 1.9, cy: 0 };
 };
 
-/** Top padding: the text starts below the scissors sitting on the top edge. */
+/** Top padding (unchanged since the scissors icon was removed). */
 const padTop = (l: { w: number; h: number }) =>
   Math.max(PAD, scissorsFor(l.w, l.h).size / 2 + 0.4);
 
@@ -463,7 +466,7 @@ function snapTargets(labels: Label[], page: number, exceptId: string) {
 }
 
 /* --------------------------------------------------------------------------
- * Care symbols + scissors (SVG, same geometry as the PDF)
+ * Care symbols (SVG, same geometry as the PDF)
  * ------------------------------------------------------------------------ */
 
 function CareSymbols({ className, style }: { className?: string; style?: React.CSSProperties }) {
@@ -491,21 +494,6 @@ function CareSymbols({ className, style }: { className?: string; style?: React.C
         {/* tumble dry */}
         <rect x={0} y={30} width={345} height={300} />
         <ellipse cx={172.5} cy={180} rx={172.5} ry={150} />
-      </g>
-    </svg>
-  );
-}
-
-/** Scissors pointing left (mirrored Lucide "scissors", 24 × 24 units). */
-function ScissorsMark({ size }: { size: number }) {
-  return (
-    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden>
-      <g fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-        <circle cx={18} cy={6} r={3} />
-        <circle cx={18} cy={18} r={3} />
-        <line x1={15.88} y1={8.12} x2={12} y2={12} />
-        <line x1={4} y1={4} x2={15.88} y2={15.88} />
-        <line x1={9.2} y1={14.8} x2={4} y2={20} />
       </g>
     </svg>
   );
@@ -1076,7 +1064,6 @@ export default function Etiquetage({ active }: { active: boolean }) {
         .sort((a, b) => a.page - b.page || a.y - b.y || b.x - a.x)
         .map((l) => {
           const lay = layouts.get(l.id) ?? layoutLabel(l, fontKey);
-          const sc = scissorsFor(l.w, l.h);
           return {
             page: l.page,
             x: l.x,
@@ -1093,7 +1080,6 @@ export default function Etiquetage({ active }: { active: boolean }) {
             care: lay.care
               ? { x: l.x + lay.care.x, y: l.y + lay.care.y, w: lay.care.w, h: lay.care.h }
               : null,
-            scissors: { cx: l.x + sc.cx, cy: l.y + sc.cy, size: sc.size },
           };
         }),
     };
@@ -1504,7 +1490,6 @@ export default function Etiquetage({ active }: { active: boolean }) {
                     {onPage.map((l) => {
                       const lay = layouts.get(l.id)!;
                       const S = lay.pt * PT;
-                      const sc = scissorsFor(l.w, l.h);
                       const isSel = l.id === selectedId;
                       return (
                         <div
@@ -1514,17 +1499,24 @@ export default function Etiquetage({ active }: { active: boolean }) {
                           onPointerDown={(e) => startInteraction(e, l, "move")}
                           onDoubleClick={() => setKbField(null)}
                         >
-                          {/* cut line */}
-                          <svg className="absolute inset-0 w-full h-full overflow-visible pointer-events-none" viewBox={`0 0 ${l.w} ${l.h}`} preserveAspectRatio="none">
+                          {/* cut line — drawn in screen pixels, at least 1.5 px and
+                              without anti-aliasing blur, so it looks as dark and
+                              sharp as the dashed line of the generated PDF */}
+                          <svg
+                            className="absolute inset-0 w-full h-full overflow-visible pointer-events-none"
+                            width={l.w * s}
+                            height={l.h * s}
+                          >
                             <rect
                               x={0}
                               y={0}
-                              width={l.w}
-                              height={l.h}
+                              width={l.w * s}
+                              height={l.h * s}
                               fill="none"
-                              stroke="#1f2937"
-                              strokeWidth={CUT_W}
-                              strokeDasharray={`${CUT_DASH} ${CUT_GAP}`}
+                              stroke={CUT_INK}
+                              strokeWidth={Math.max(1.5, CUT_W * s)}
+                              strokeDasharray={`${CUT_DASH * s} ${CUT_GAP * s}`}
+                              shapeRendering="crispEdges"
                             />
                           </svg>
 
@@ -1568,19 +1560,6 @@ export default function Etiquetage({ active }: { active: boolean }) {
                                 />
                               )}
                             </div>
-                          </div>
-
-                          {/* scissors on the cut line */}
-                          <div
-                            className="etq-scissors"
-                            style={{
-                              left: (sc.cx - sc.size / 2 - 0.5) * s,
-                              top: (sc.cy - sc.size / 2) * s,
-                              width: (sc.size + 1) * s,
-                              height: sc.size * s,
-                            }}
-                          >
-                            <ScissorsMark size={sc.size * s} />
                           </div>
 
                           {lay.overflow && (

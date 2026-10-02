@@ -11,6 +11,8 @@ Routes are prefixed with /api because Vercel rewrites /api/* to this file
     POST /api/generate  -> JSON payload in, documents.zip out
     POST /api/labels    -> Étiquetage labels in, etiquettes.pdf out
     POST /api/tracking/akkon -> Akkon Lines BL lookup (vessel, ETA, ...)
+    /api/visits/...     -> Visit day: shared list in Upstash Redis, behind
+                           the office access code (see api/visit_days.py)
 
 Local development (from Web/frontend):
     pip install -r requirements.txt
@@ -26,9 +28,9 @@ from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
 from docxtpl import DocxTemplate
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 # --------------------------------------------------------------------------
@@ -917,7 +919,7 @@ class LabelBox(BaseModel):
     max_width: float = 0
     lines: List[LabelLine] = Field(default_factory=list)
     care: Optional[LabelRect] = None
-    scissors: Optional[LabelScissors] = None
+    scissors: Optional[LabelScissors] = None  # no longer drawn (kept for old pages)
 
 
 class LabelsRequest(BaseModel):
@@ -989,6 +991,126 @@ def tracking_akkon(req: AkkonTrackRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except AkkonError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+# --------------------------------------------------------------------------
+# Visit day — shared list of customs visit days (Upstash Redis).
+# Every route needs the office access code in the X-Visit-Code header.
+# --------------------------------------------------------------------------
+
+
+def _vd():
+    try:
+        from api import visit_days
+    except ImportError:  # loaded outside the package context
+        import sys
+        if str(BASE_DIR) not in sys.path:
+            sys.path.append(str(BASE_DIR))
+        import visit_days
+    return visit_days
+
+
+@app.middleware("http")
+async def _visits_no_store(request: Request, call_next):
+    """The visit list is private and changes often: never cache it."""
+    response = await call_next(request)
+    if request.url.path.startswith("/api/visits"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    return (
+        request.headers.get("x-real-ip")
+        or (fwd.split(",")[0].strip() if fwd else "")
+        or (request.client.host if request.client else "")
+    )
+
+
+def _visit_call(request: Request, code: str, fn, *args, **kwargs):
+    """Check the code, run fn, turn VisitError into a clean JSON error."""
+    vd = _vd()
+    try:
+        vd.check_code(code, _client_ip(request))
+        return fn(*args, **kwargs)
+    except vd.VisitError as exc:
+        return JSONResponse(status_code=exc.status, content={"detail": str(exc), **exc.extra})
+
+
+class VisitIn(BaseModel):
+    client: str = ""
+    declaration: str = ""
+    place: str = ""
+    visit_date: str = ""            # "YYYY-MM-DD" or ""
+    force: bool = False             # add even if the declaration number exists
+    expected_updated_at: str = ""   # edit only if nobody changed it meanwhile
+
+
+class VisitPdfIn(BaseModel):
+    start: str = ""                 # "YYYY-MM-DD" ("" = from the beginning)
+    end: str = ""                   # "YYYY-MM-DD" ("" = until today)
+
+
+@app.get("/api/visits/version")
+def visits_version(request: Request, x_visit_code: str = Header("")):
+    return _visit_call(request, x_visit_code, _vd().version)
+
+
+@app.get("/api/visits/board")
+def visits_board(request: Request, x_visit_code: str = Header("")):
+    return _visit_call(request, x_visit_code, _vd().board)
+
+
+@app.get("/api/visits/passed")
+def visits_passed(request: Request, offset: int = 0, limit: int = 10, x_visit_code: str = Header("")):
+    return _visit_call(request, x_visit_code, _vd().passed, offset, limit)
+
+
+@app.post("/api/visits")
+def visits_create(req: VisitIn, request: Request, x_visit_code: str = Header("")):
+    data = req.model_dump()
+    return _visit_call(request, x_visit_code, _vd().create, data, req.force)
+
+
+@app.put("/api/visits/{item_id}")
+def visits_update(item_id: str, req: VisitIn, request: Request, x_visit_code: str = Header("")):
+    data = req.model_dump()
+    return _visit_call(request, x_visit_code, _vd().update, item_id, data, req.expected_updated_at, req.force)
+
+
+@app.delete("/api/visits/{item_id}")
+def visits_delete(item_id: str, request: Request, x_visit_code: str = Header("")):
+    def run():
+        _vd().delete(item_id)
+        return {"ok": True}
+    return _visit_call(request, x_visit_code, run)
+
+
+@app.post("/api/visits/pdf")
+def visits_pdf(req: VisitPdfIn, request: Request, x_visit_code: str = Header("")):
+    vd = _vd()
+
+    def run():
+        start = vd.parse_date(req.start)
+        end = vd.parse_date(req.end)
+        if start and end and start > end:
+            start, end = end, start
+        try:
+            from api.visits_pdf import build_visits_pdf
+        except ImportError:  # loaded outside the package context
+            from visits_pdf import build_visits_pdf
+        today = vd.today_dz()
+        items = vd.added_between(start, end)
+        pdf_bytes = build_visits_pdf(items, today, start, end or (today if start else None),
+                                     datetime.now(vd.DZ))
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="jours_de_visite_{today.isoformat()}.pdf"'},
+        )
+
+    return _visit_call(request, x_visit_code, run)
 
 
 def _ai_error_detail(exc: Exception) -> str:

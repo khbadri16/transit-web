@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Anchor,
   Bookmark,
   CalendarClock,
   Check,
@@ -33,6 +34,10 @@ import {
  *  - CMA CGM and HMM don't accept a BL in a link: the BL is copied to the
  *    clipboard, and the "⚡ Fill BL" bookmark fills + searches it on their
  *    page in one click.
+ *  - HMM also has an "Arrival notice" page (Noatum Maritime / Marmedsa) with
+ *    the arrival date at Annaba. It asks for a "type the characters" code, so
+ *    our server can't read it: you type the code, ⚡ Fill BL searches the BL,
+ *    and a second click on ⚡ Fill BL sends the arrival date + vessel back here.
  *
  * The list is saved in this browser (localStorage). Export / Import moves it
  * to another computer.
@@ -79,6 +84,14 @@ type Shipment = {
     found?: boolean;
     error?: string;
     rows?: AkkonRow[];
+  };
+  /** last answer of the HMM arrival notice page (sent by ⚡ Fill BL) */
+  notice?: {
+    checkedAt: string;
+    /** as shown on their page, e.g. "Actual 21-JUL-2026" */
+    arrival: string;
+    departure: string;
+    actual: boolean;
   };
   createdAt: string;
 };
@@ -149,6 +162,40 @@ const CARRIERS: Record<CarrierId, CarrierDef> = {
 };
 const CARRIER_IDS = Object.keys(CARRIERS) as CarrierId[];
 
+/* ---- HMM arrival notice (Noatum Maritime / Marmedsa) ----------------------
+ * Opened in a tab NAMED "trk=<BL>": the name survives their code page, so
+ * ⚡ Fill BL still knows the BL after it. The tab keeps a link back to this
+ * page (window.opener) so ⚡ Fill BL can send the result here. */
+const NOTICE_ORIGIN = "https://arrivals-notice.marmedsabemarine.com";
+const NOTICE_URL =
+  `${NOTICE_ORIGIN}/ords/r/wksmmexp/arrival-noatum/arrivals-notice2` +
+  "?p10_bl_booking=&p10_carrier=&cs=1sPmowFa1ijMOqZyUJlg1fzJYIfp7bMvq7UtfOjwE3mEGNAS7VRuYn_vULyz-mcnqBAtCR9GTZTsnM76pXyvwfg";
+const noticeUrl = (bl: string) => `${NOTICE_URL}#trk=${encodeURIComponent(bl)}`;
+
+const MONTHS: [string, number][] = [
+  ["JAN", 1], ["FEB", 2], ["FEV", 2], ["MAR", 3], ["APR", 4], ["AVR", 4],
+  ["MAY", 5], ["MAI", 5], ["JUIN", 6], ["JUN", 6], ["JUIL", 7], ["JUL", 7],
+  ["AUG", 8], ["AOU", 8], ["SEP", 9], ["OCT", 10], ["NOV", 11], ["DEC", 12],
+];
+
+/** "Actual 21-JUL-2026" / "Estimé 05-AOÛT-2026" / "21/07/2026" -> "21/07/2026" ("" if no date). */
+function noticeDate(text: string): string {
+  const t = (text || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+  const num = /(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})/.exec(t);
+  let d: number, m: number, y: number;
+  if (num) {
+    [d, m, y] = [Number(num[1]), Number(num[2]), Number(num[3])];
+  } else {
+    const named = /(\d{1,2})[\s/.-]+([A-Z]{3,5})\.?[\s/.-]+(\d{4})/.exec(t);
+    if (!named) return "";
+    const hit = MONTHS.find(([p]) => named[2].startsWith(p));
+    if (!hit) return "";
+    [d, m, y] = [Number(named[1]), hit[1], Number(named[3])];
+  }
+  if (d < 1 || d > 31 || m < 1 || m > 12) return "";
+  return `${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}/${y}`;
+}
+
 /** Guess the line from well-known BL prefixes (the user can always change it). */
 function detectCarrier(bl: string): CarrierId | null {
   const b = bl.toUpperCase();
@@ -190,15 +237,32 @@ const countryLabel = (v: string) => v.split("|")[0] || "";
 /* ---- "⚡ Fill BL" bookmark ------------------------------------------------
  * Runs on the CMA CGM / HMM / Akkon page opened by the Track button: reads the
  * BL from the link (#trk=...), types it into their search box and presses
- * their search button — exactly what you would do by hand. */
+ * their search button — exactly what you would do by hand.
+ * On the HMM arrival notice page (after YOU typed their code) it searches the
+ * BL; clicked again on the result, it sends vessel + dates back to this page.
+ * No "%" anywhere: browsers URL-decode bookmarks before running them. */
 const FILL_BL_BOOKMARKLET =
   "javascript:(function(){var p={};location.hash.slice(1).split('&').forEach(function(kv){var i=kv.indexOf('=');if(i>0)p[kv.slice(0,i)]=decodeURIComponent(kv.slice(i+1));});" +
-  "var n=p.trk;if(!n){alert('Open this page with the Track button of your Tracking page first.');return;}" +
+  "var ss='';try{ss=sessionStorage.getItem('trkBL')||'';}catch(x){}" +
+  "var n=p.trk||(window.name.indexOf('trk=')===0?window.name.slice(4):'')||ss;" +
+  "if(!n){alert('Open this page with the Track or Arrival notice button of your Tracking page first.');return;}" +
   "function set(e,v){if(!e)return false;e.value=v;e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));return true;}" +
   "var h=location.hostname,e;" +
   "if(h.indexOf('cma-cgm')>=0){e=document.getElementById('Reference');if(set(e,n))e.form.querySelector('[type=submit]').click();}" +
   "else if(h.indexOf('hmm21')>=0){e=document.querySelector('input[name=srchBlNo1]');if(set(e,n)&&typeof search==='function')search();}" +
   "else if(h.indexOf('akkonlines')>=0){if(p.c)set(document.getElementById('ddlCountry'),p.c);if(set(document.getElementById('TextBox1'),n))document.getElementById('Button1').click();}" +
+  "else if(h.indexOf('marmedsabemarine')>=0){e=document.getElementById('P10_BL_BOOKING');" +
+  "if(!e){alert('First type the code and press I am not a robot, then click Fill BL again.');return;}" +
+  "try{sessionStorage.setItem('trkBL',n);}catch(x){}" +
+  "var r=null;function col(hd,c,re,d){for(var k=0;k<hd.length;k++)if(re.test(hd[k]))return c[k]||'';return c[d]||'';}" +
+  "[].forEach.call(document.querySelectorAll('table'),function(t){var hd=null;[].forEach.call(t.rows,function(row){" +
+  "var c=[].map.call(row.cells,function(x){return x.textContent.replace(/\\s+/g,' ').trim();});" +
+  "if(!hd){if(/arrival date|date d.arriv/i.test(c.join('|')))hd=c;return;}" +
+  "if(!r&&c.indexOf(n)>=0)r={type:'trk-notice',bl:n,vessel:col(hd,c,/^vessel|navire/i,4),departure:col(hd,c,/departure date|date de d.part/i,9),arrival:col(hd,c,/arrival date|date d.arriv/i,10)};});});" +
+  "if(r){var o=window.opener,txt=n+' - arrival: '+(r.arrival||'no date yet')+(r.vessel?' - vessel: '+r.vessel:'');" +
+  "if(o&&!o.closed){o.postMessage(r,'*');alert('Sent to your Tracking page. '+txt);}" +
+  "else alert(txt+' (open this page with the Arrival notice button of your Tracking page to save it there automatically)');return;}" +
+  "if(set(e,n)){var b=[].filter.call(document.querySelectorAll('button'),function(x){return x.id==='filter-search'&&x.offsetParent!==null;})[0];if(b)b.click();}}" +
   "else{alert('This page is not supported by Fill BL.');}})();";
 
 /* ---- dates (dd/mm/yyyy) ------------------------------------------------- */
@@ -259,6 +323,10 @@ const normalize = (raw: Partial<Shipment>): Shipment | null => {
     status: raw.status === "arrived" || raw.status === "done" ? raw.status : "transit",
     akkonCountry: raw.akkonCountry ?? "",
     auto: raw.auto,
+    notice:
+      raw.notice && typeof raw.notice.arrival === "string" && typeof raw.notice.checkedAt === "string"
+        ? raw.notice
+        : undefined,
     createdAt: raw.createdAt ?? new Date().toISOString(),
   };
 };
@@ -345,6 +413,48 @@ export default function Tracking({ active }: { active: boolean }) {
     setList((prev) =>
       prev.map((s) => (s.id === id ? { ...s, ...(typeof patch === "function" ? patch(s) : patch) } : s))
     );
+  }, []);
+
+  /* ---- HMM arrival notice: result sent by ⚡ Fill BL ---------------------- */
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.origin !== NOTICE_ORIGIN) return;
+      const d = e.data as Record<string, unknown> | null;
+      if (!d || typeof d !== "object" || d.type !== "trk-notice") return;
+      const str = (v: unknown) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, 120) : "");
+      const blNo = str(d.bl).toUpperCase().replace(/\s+/g, "");
+      if (!blNo) return;
+      if (!listRef.current.some((s) => s.bl === blNo)) {
+        flash(`Arrival notice: ${blNo} is not in your list.`, "error");
+        return;
+      }
+      const arrival = str(d.arrival);
+      const vessel = str(d.vessel);
+      const etaDmy = noticeDate(arrival);
+      const actual = /actual|r[ée]el/i.test(arrival);
+      const arrived = actual && etaDmy !== "" && (daysUntil(etaDmy) ?? 1) <= 0;
+      setList((prev) =>
+        prev.map((s) =>
+          s.bl !== blNo
+            ? s
+            : {
+                ...s,
+                notice: { checkedAt: new Date().toISOString(), arrival, departure: str(d.departure), actual },
+                ...(etaDmy ? { eta: etaDmy, etaSource: "auto" as const } : {}),
+                ...(vessel ? { vessel } : {}),
+                ...(arrived && s.status === "transit" ? { status: "arrived" as const } : {}),
+              }
+        )
+      );
+      flash(
+        etaDmy
+          ? `${blNo}: arrival ${etaDmy} (${actual ? "actual" : "estimated"}) saved${arrived ? " — marked Arrived" : ""}.`
+          : `${blNo}: the arrival notice has no arrival date yet.`
+      );
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /* ---- Akkon automatic check -------------------------------------------- */
@@ -580,7 +690,7 @@ export default function Tracking({ active }: { active: boolean }) {
         {showHelp && (
           <section className="card mb-5 border-indigo-500/30">
             <h2 className="section-title flex items-center gap-2">
-              <Zap size={16} className="text-amber-300" /> One-click search on CMA CGM, HMM and Akkon
+              <Zap size={16} className="text-amber-300" /> One-click search on CMA CGM, HMM (+ arrival notice) and Akkon
             </h2>
             <div className="grid gap-4 md:grid-cols-[1fr_auto] items-start text-sm text-slate-300">
               <ol className="space-y-1.5 list-decimal ps-5">
@@ -593,6 +703,11 @@ export default function Tracking({ active }: { active: boolean }) {
                 <li>
                   Click <strong>Track</strong> on a CMA CGM / HMM / Akkon BL here, then click <strong>⚡ Fill BL</strong> in your
                   bookmarks bar: the BL is typed and searched for you.
+                </li>
+                <li>
+                  <strong>HMM arrival notice:</strong> click <strong>Arrival notice</strong>, type their code and press
+                  “I'm not a robot”, then <strong>⚡ Fill BL</strong> — it searches the BL. Click <strong>⚡ Fill BL</strong> again
+                  on the result: the arrival date and the vessel come back to this list.
                 </li>
                 <li className="text-slate-400">
                   Without the bookmark it still works: the BL is copied, just press <kbd className="trk-kbd">Ctrl</kbd>+<kbd className="trk-kbd">V</kbd> and Search.
@@ -611,7 +726,8 @@ export default function Tracking({ active }: { active: boolean }) {
               </a>
             </div>
             <p className="mt-3 text-xs text-slate-500">
-              MSC, MAERSK and COSCO don't need it — their page opens with the search already done.
+              MSC, MAERSK and COSCO don't need it — their page opens with the search already done. Already have the
+              bookmark? Drag this one again to replace it (it learned the arrival notice).
             </p>
           </section>
         )}
@@ -700,7 +816,8 @@ export default function Tracking({ active }: { active: boolean }) {
           </div>
           <p className="mt-3 text-xs text-slate-500">
             <span className="text-emerald-300">●</span> AKKON: vessel and ETA are fetched automatically. Other lines: open
-            their page with <strong>Track</strong> and type the ETA here.
+            their page with <strong>Track</strong> and type the ETA here (HMM: <strong>Arrival notice</strong> + ⚡ Fill BL
+            brings it back for you).
           </p>
         </section>
 
@@ -781,6 +898,10 @@ export default function Tracking({ active }: { active: boolean }) {
                     flash(`${s.bl} copied — on their page press Ctrl+V and Search, or click ⚡ Fill BL.`);
                   }
                 }}
+                onNotice={() => {
+                  copyBl(s.bl, true);
+                  flash(`${s.bl} copied — type their code, then click ⚡ Fill BL (once to search, again to bring the arrival date here).`);
+                }}
               />
             ))}
           </div>
@@ -830,6 +951,7 @@ function ShipmentCard({
   onDelete,
   onCopy,
   onTrack,
+  onNotice,
 }: {
   s: Shipment;
   editing: boolean;
@@ -844,6 +966,7 @@ function ShipmentCard({
   onDelete: () => void;
   onCopy: () => void;
   onTrack: () => void;
+  onNotice: () => void;
 }) {
   const def = CARRIERS[s.carrier];
   const sum = s.carrier === "AKKON" ? akkonSummary(s.auto?.rows) : null;
@@ -893,6 +1016,12 @@ function ShipmentCard({
                 · {s.auto.ok ? (s.auto.found ? `checked ${timeAgo(s.auto.checkedAt)}` : "not found on Akkon") : `check failed: ${s.auto.error}`}
               </span>
             )}
+            {s.notice && (
+              <span className="text-slate-500">
+                {" "}
+                · notice: {s.notice.arrival ? (s.notice.actual ? "actual" : "estimated") : "no date yet"}, {timeAgo(s.notice.checkedAt)}
+              </span>
+            )}
           </p>
         </div>
 
@@ -925,6 +1054,17 @@ function ShipmentCard({
           >
             Track <ExternalLink size={14} />
           </a>
+          {s.carrier === "HMM" && (
+            <a
+              href={noticeUrl(s.bl)}
+              target={`trk=${s.bl}`}
+              onClick={onNotice}
+              className="btn-ghost !py-2 !px-3 !text-sm"
+              title="HMM arrival notice (Noatum) — type their code, then ⚡ Fill BL"
+            >
+              <Anchor size={14} /> Arrival notice
+            </a>
+          )}
           <button type="button" className="etq-icon-btn" onClick={onEdit} title="Edit" aria-label="Edit">
             {editing ? <X size={15} /> : <Pencil size={15} />}
           </button>

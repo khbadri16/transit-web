@@ -13,10 +13,16 @@ dated on the day it is generated) and the Facture de transit (toggle-gated,
 fully independent, with live TVA 9% / TAUX / TOTAL TTC calculations — always a
 standalone file, never merged).
 
+The DCP part remembers each importer's fixed lines (المستورد, رقم س ت, تاريخ
+س ت, العنوان) in the browser only (`src/DcpClientBook.tsx`): pick a saved
+client to fill them; they are saved / updated automatically on generate, and
+Export / Import moves the list to another browser — nothing is sent to the
+server.
+
 A second page, **Étiquetage** (left sidebar, `#/etiquetage`), is a small label
 editor: product labels (الاسم / العنوان / المنتوج / التركيب / المنشأ / علامة
 الصيانة) are placed and resized freely on A4 sheets, then exported as one PDF
-with a dashed cut line and scissors around every label (`POST /api/labels`,
+with a dashed cut line around every label (`POST /api/labels`,
 drawn by `frontend/api/labels_pdf.py`). The layout is computed in the browser
 with the same font as the PDF (`public/fonts/PlexSansArabic-Bold.ttf`).
 
@@ -26,7 +32,21 @@ AKKON BLs are checked automatically by the server (`POST /api/tracking/akkon`,
 `frontend/api/akkon_tracking.py`, which posts Akkon's public tracking form and
 reads its result table). MSC, MAERSK and COSCO open their own tracking page
 with the BL already searched; CMA CGM and HMM open with the BL copied, and the
-"⚡ Fill BL" bookmark fills and searches it on their page.
+"⚡ Fill BL" bookmark fills and searches it on their page. HMM BLs also have an
+"Arrival notice" button (Noatum's notice page): you type its code, then
+"⚡ Fill BL" searches the BL and sends the arrival date back to the list.
+
+A fourth page, **Visit day** (`#/visit-day`), is the office's shared list of
+customs visit days, saved on the server in Upstash Redis
+(`frontend/api/visit_days.py`, routes `/api/visits/...`): no visit date yet /
+waiting / today / passed (10 per page), plus a French PDF of the clients added
+in a period (`frontend/api/visits_pdf.py`). It needs these Vercel environment
+variables:
+
+| Variable | What |
+| --- | --- |
+| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | the Upstash database |
+| `VISIT_DAY_CODE` | the office access code (asked once per computer) |
 
 - `frontend/` — Vite + React + TypeScript + Tailwind CSS v4
   - `frontend/api/index.py` — the FastAPI serverless function

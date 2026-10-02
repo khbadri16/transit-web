@@ -1,5 +1,6 @@
 import { Fragment, useMemo, useRef, useState } from "react";
 import { ArabicKeyboard } from "./ArabicKeyboard";
+import { DcpClientBook, rememberDcpClient } from "./DcpClientBook";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -1308,6 +1309,8 @@ function App() {
       window.setTimeout(() => URL.revokeObjectURL(url), 1500);
 
       saveToHistory(payload);
+      // remember / update this importer's fixed lines (this browser only)
+      if (payload.dcp_enabled) rememberDcpClient(payload.dcp);
       flash(`${docCount} document(s) generated — download started.`, "success");
     } catch (err) {
       const isNetwork = err instanceof TypeError;
@@ -1738,6 +1741,13 @@ function App() {
 
                 {form.dcp_enabled && (
                   <div className="dcp-form mt-6 space-y-4">
+                    {/* saved importers: fill المستورد / س ت / تاريخ س ت / العنوان */}
+                    <DcpClientBook
+                      dcp={form.dcp}
+                      onApply={(patch) =>
+                        setForm((prev) => ({ ...prev, dcp: { ...prev.dcp, ...patch } }))
+                      }
+                    />
                     {DCP_ROWS.map((row, ri) => {
                       const kbInRow = row.some(
                         (f) =>

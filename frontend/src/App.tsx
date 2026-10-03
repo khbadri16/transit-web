@@ -1,6 +1,7 @@
-import { Fragment, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ArabicKeyboard } from "./ArabicKeyboard";
 import { DcpClientBook, rememberDcpClient } from "./DcpClientBook";
+import FolderCover from "./FolderCover";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -24,6 +25,8 @@ import {
   Brain,
   Send,
   Receipt,
+  Lock,
+  KeyRound,
 } from "lucide-react";
 
 /* --------------------------------------------------------------------------
@@ -178,6 +181,28 @@ type Toast = { message: string; type: "success" | "error" };
  * Set VITE_API_URL only to point at an API hosted somewhere else.
  */
 const API_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
+
+/** AI used by the tariff annex — both do the same steps on the server. */
+type AiProvider = "gemini" | "claude";
+const AI_PROVIDER_KEY = "ai_provider_v1";
+/** Claude costs money: unlocked with a code (CLAUDE_CODE on the server), remembered on this PC. */
+const CLAUDE_CODE_KEY = "claude_code_v1";
+const readLocal = (k: string) => {
+  try {
+    return localStorage.getItem(k) || "";
+  } catch {
+    return "";
+  }
+};
+const writeLocal = (k: string, v: string) => {
+  try {
+    if (v) localStorage.setItem(k, v);
+    else localStorage.removeItem(k);
+  } catch {
+    /* private window */
+  }
+};
+const AI_LABEL: Record<AiProvider, string> = { gemini: "Gemini", claude: "Claude" };
 
 /* --------------------------------------------------------------------------
  * Local history cache (localStorage)
@@ -396,7 +421,7 @@ const marqueFor = (size: Size) => `01TC${size}`;
 
 /** Shipping companies — one is chosen per generation and printed on every
  *  MISE A QUAI. "OTHER" lets the user type a custom company name. */
-const COMPANIES: string[] = ["CMA", "AKKON", "MSC", "HMM", "WHITE LINE", "COSCO"];
+const COMPANIES: string[] = ["CMA", "AKKON", "MSC", "HMM", "WHITE LINE", "COSCO", "MAERSK", "ARKAS"];
 
 /* --------------------------------------------------------------------------
  * Mandat MSC (autorisation aux mandataires)
@@ -587,6 +612,64 @@ function App() {
   const [classifyError, setClassifyError] = useState<string | null>(null);
   /** Sending hand-typed products (rows with an empty Code HS) to the AI. */
   const [isSendingProducts, setIsSendingProducts] = useState(false);
+  /** Which AI reads the invoice / picks the codes — remembered on this PC. */
+  /** The Claude code typed once on this PC ("" = Claude locked). */
+  const [claudeCode, setClaudeCode] = useState(() => readLocal(CLAUDE_CODE_KEY));
+  const [aiProvider, setAiProvider] = useState<AiProvider>(() =>
+    readLocal(AI_PROVIDER_KEY) === "claude" && readLocal(CLAUDE_CODE_KEY) ? "claude" : "gemini"
+  );
+  /** Which AIs have a key on the server (null = not known yet). */
+  const [aiKeys, setAiKeys] = useState<{ gemini: boolean; claude: boolean; claude_code: boolean } | null>(null);
+  const [claudeUnlockOpen, setClaudeUnlockOpen] = useState(false);
+  const [claudeCodeInput, setClaudeCodeInput] = useState("");
+  const [claudeUnlockError, setClaudeUnlockError] = useState("");
+  const [claudeUnlocking, setClaudeUnlocking] = useState(false);
+  /** What the error's "retry" button must redo. */
+  const [lastAiAction, setLastAiAction] = useState<"invoice" | "typed">("invoice");
+
+  useEffect(() => writeLocal(AI_PROVIDER_KEY, aiProvider), [aiProvider]);
+
+  useEffect(() => {
+    fetch(`${API_URL}/api/ai-providers`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setAiKeys({ gemini: !!d.gemini, claude: !!d.claude, claude_code: !!d.claude_code }))
+      .catch(() => undefined);
+  }, []);
+
+  /** Forget the Claude code on this PC and go back to Gemini. */
+  const lockClaude = () => {
+    writeLocal(CLAUDE_CODE_KEY, "");
+    setClaudeCode("");
+    setAiProvider("gemini");
+  };
+
+  const unlockClaude = async () => {
+    const code = claudeCodeInput.trim();
+    if (!code) return setClaudeUnlockError("أدخل الرمز.");
+    setClaudeUnlocking(true);
+    setClaudeUnlockError("");
+    try {
+      const res = await fetch(`${API_URL}/api/claude-unlock`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(typeof data?.detail === "string" ? data.detail : `خطأ في الخادم (HTTP ${res.status})`);
+      }
+      writeLocal(CLAUDE_CODE_KEY, code);
+      setClaudeCode(code);
+      setAiProvider("claude");
+      setClaudeUnlockOpen(false);
+      setClaudeCodeInput("");
+      flash("تم فتح Claude على هذا الجهاز.", "success");
+    } catch (err) {
+      setClaudeUnlockError(err instanceof TypeError ? "تعذر الاتصال بالخادم." : err instanceof Error ? err.message : "خطأ غير متوقع.");
+    } finally {
+      setClaudeUnlocking(false);
+    }
+  };
 
   const counts = useMemo(() => {
     const c = { "20": 0, "40": 0, "45": 0 } as Record<Size, number>;
@@ -962,8 +1045,9 @@ function App() {
     setClassifyError(null);
   };
 
-  const classifyInvoice = async () => {
+  const classifyInvoice = async (provider: AiProvider = aiProvider) => {
     if (!invoiceFile || isClassifying) return;
+    setLastAiAction("invoice");
     setIsClassifying(true);
     setClassifyError(null);
 
@@ -974,14 +1058,17 @@ function App() {
       const formData = new FormData();
       formData.append("invoice", invoiceFile);
       formData.append("mode", classifyMode);
+      formData.append("provider", provider);
 
       const res = await fetch(`${API_URL}/api/classify-tariff`, {
         method: "POST",
         body: formData,
+        headers: provider === "claude" ? { "X-Claude-Code": claudeCode } : undefined,
         signal: controller.signal,
       });
 
       if (!res.ok) {
+        if (provider === "claude" && res.status === 401) lockClaude(); // code changed / wrong
         let message = `خطأ في الخادم (HTTP ${res.status})`;
         try {
           const data = await res.json();
@@ -1035,13 +1122,14 @@ function App() {
   /* Send the hand-typed products (rows still without a Code HS) to the AI and
      fill their codes in place — for invoices with only a few lines, where
      typing is faster than photographing the invoice. */
-  const sendTypedProducts = async () => {
+  const sendTypedProducts = async (provider: AiProvider = aiProvider) => {
     if (isSendingProducts || isClassifying) return;
     const pending = form.dcp_produits.filter(
       (p) => p.produit.trim() !== "" && p.code.trim() === ""
     );
     if (pending.length === 0) return;
 
+    setLastAiAction("typed");
     setIsSendingProducts(true);
     setClassifyError(null);
 
@@ -1051,15 +1139,20 @@ function App() {
     try {
       const res = await fetch(`${API_URL}/api/classify-products`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(provider === "claude" ? { "X-Claude-Code": claudeCode } : {}),
+        },
         body: JSON.stringify({
           products: pending.map((p) => p.produit.trim()),
           mode: classifyMode,
+          provider,
         }),
         signal: controller.signal,
       });
 
       if (!res.ok) {
+        if (provider === "claude" && res.status === 401) lockClaude(); // code changed / wrong
         let message = `خطأ في الخادم (HTTP ${res.status})`;
         try {
           const data = await res.json();
@@ -1088,13 +1181,14 @@ function App() {
         if (row) byId.set(row.id, r);
       });
 
-      let filled = 0;
+      /* Count BEFORE setForm: React runs the updater below later (batched),
+         so a counter incremented inside it was still 0 here -> false error. */
+      const filled = pending.filter((p) => (byId.get(p.id)?.codeHS || "").trim() !== "").length;
       setForm((prev) => ({
         ...prev,
         dcp_produits: prev.dcp_produits.map((p) => {
           const r = byId.get(p.id);
           if (!r || !r.codeHS || p.code.trim() !== "") return p;
-          filled++;
           return {
             ...p,
             code: r.codeHS.trim(),
@@ -1830,10 +1924,80 @@ function App() {
 
                 {/* AI Invoice Classification */}
                 <div className="mb-5 p-4 rounded-xl border border-dashed border-slate-700 bg-slate-900/30">
-                  <div className="flex items-center gap-2 mb-3">
+                  <div className="flex flex-wrap items-center gap-2 mb-3">
                     <Sparkles size={16} className="text-amber-400" />
                     <span className="text-sm font-semibold text-white">تصنيف تلقائي بالذكاء الاصطناعي</span>
+                    {/* Which AI: Gemini or Claude (same steps, same results format) */}
+                    <div className="ms-auto flex items-center gap-1.5" dir="ltr">
+                      <div className="seg" title="النموذج المستعمل">
+                        {(["gemini", "claude"] as AiProvider[]).map((p) => (
+                          <button
+                            key={p}
+                            type="button"
+                            className={`seg-btn ${aiProvider === p ? "seg-active seg-active-violet" : ""}`}
+                            onClick={() => {
+                              if (p === "claude" && !claudeCode) {
+                                setClaudeUnlockOpen((o) => !o);
+                                setClaudeUnlockError("");
+                                return;
+                              }
+                              setAiProvider(p);
+                            }}
+                            title={p === "claude" && !claudeCode ? "Claude مقفل — يلزم الرمز" : undefined}
+                          >
+                            {p === "claude" && !claudeCode && <Lock size={11} className="inline -mt-px me-1" />}
+                            {AI_LABEL[p]}
+                            {aiKeys && !aiKeys[p] && <span className="ms-1 text-[10px] text-slate-500">(بدون مفتاح)</span>}
+                          </button>
+                        ))}
+                      </div>
+                      {claudeCode && (
+                        <button
+                          type="button"
+                          onClick={lockClaude}
+                          className="p-1.5 rounded-lg text-slate-500 hover:text-amber-300 hover:bg-amber-400/10 transition-colors"
+                          title="قفل Claude على هذا الجهاز"
+                          aria-label="قفل Claude"
+                        >
+                          <Lock size={14} />
+                        </button>
+                      )}
+                    </div>
                   </div>
+                  {claudeUnlockOpen && !claudeCode && (
+                    <form
+                      className="mb-3 flex flex-wrap items-center gap-2 p-3 rounded-lg border border-amber-400/30 bg-amber-500/5"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void unlockClaude();
+                      }}
+                    >
+                      <KeyRound size={15} className="text-amber-300 shrink-0" />
+                      <span className="text-xs text-amber-100/90">Claude مدفوع — أدخل الرمز لفتحه على هذا الجهاز:</span>
+                      <input
+                        type="password"
+                        dir="ltr"
+                        autoComplete="off"
+                        className="input !py-1.5 !w-40 text-sm"
+                        value={claudeCodeInput}
+                        onChange={(e) => setClaudeCodeInput(e.target.value)}
+                        placeholder="الرمز"
+                        aria-label="رمز Claude"
+                      />
+                      <button type="submit" className="btn-primary !py-1.5 !px-3 !text-xs" disabled={claudeUnlocking}>
+                        {claudeUnlocking ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />} فتح
+                      </button>
+                      <button type="button" className="text-xs text-slate-400 hover:text-white" onClick={() => setClaudeUnlockOpen(false)}>
+                        إلغاء
+                      </button>
+                      {claudeUnlockError && <p className="basis-full text-xs text-rose-300">{claudeUnlockError}</p>}
+                    </form>
+                  )}
+                  {aiKeys && !aiKeys[aiProvider] && (aiProvider !== "claude" || claudeCode) && (
+                    <p className="-mt-1 mb-3 text-xs text-amber-300/90">
+                      مفتاح {AI_LABEL[aiProvider]} غير مُعدّ بعد على الخادم ({aiProvider === "claude" ? "ANTHROPIC_API_KEY" : "GEMINI_API_KEY"} في Vercel).
+                    </p>
+                  )}
 
                   {!invoiceFile ? (
                     <div
@@ -1902,7 +2066,7 @@ function App() {
                       </button>
                     </div>
                     <button
-                      onClick={classifyInvoice}
+                      onClick={() => void classifyInvoice()}
                       disabled={!invoiceFile || isClassifying || isSendingProducts}
                       className="btn-primary flex-1 sm:flex-none !py-2 !px-5 !text-sm"
                     >
@@ -1925,12 +2089,33 @@ function App() {
                     <div className="mt-3 flex items-start gap-2 p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm">
                       <AlertTriangle size={15} className="mt-0.5 shrink-0" />
                       <span className="flex-1">{classifyError}</span>
-                      <button
-                        onClick={classifyInvoice}
-                        className="shrink-0 inline-flex items-center gap-1 text-xs font-medium text-rose-200 hover:text-white transition-colors"
-                      >
-                        <RotateCcw size={12} /> إعادة
-                      </button>
+                      {(() => {
+                        const other: AiProvider = aiProvider === "gemini" ? "claude" : "gemini";
+                        const retry = (p: AiProvider) =>
+                          lastAiAction === "typed" ? void sendTypedProducts(p) : void classifyInvoice(p);
+                        return (
+                          <span className="shrink-0 flex flex-col items-end gap-1.5">
+                            <button
+                              onClick={() => retry(aiProvider)}
+                              className="inline-flex items-center gap-1 text-xs font-medium text-rose-200 hover:text-white transition-colors"
+                            >
+                              <RotateCcw size={12} /> إعادة
+                            </button>
+                            {aiKeys?.[other] !== false && (other !== "claude" || claudeCode) && (
+                              <button
+                                onClick={() => {
+                                  setAiProvider(other);
+                                  retry(other);
+                                }}
+                                className="inline-flex items-center gap-1 text-xs font-semibold text-amber-200 hover:text-white transition-colors"
+                                title={`أعد نفس الطلب باستعمال ${AI_LABEL[other]}`}
+                              >
+                                <Sparkles size={12} /> جرّب {AI_LABEL[other]}
+                              </button>
+                            )}
+                          </span>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
@@ -2036,7 +2221,7 @@ function App() {
                           : "كل المنتوجات لها رمز تعريفي."}
                       </p>
                       <button
-                        onClick={sendTypedProducts}
+                        onClick={() => void sendTypedProducts()}
                         disabled={
                           pendingProductCount === 0 ||
                           isSendingProducts ||
@@ -2614,6 +2799,19 @@ function App() {
                 </button>
               </div>
             </div>
+
+            {/* ── Folder cover (page glued on the client's folder) ─────── */}
+            <FolderCover
+              source={{
+                client: form.client_name,
+                line: companyName,
+                bl: form.bl_number,
+                containers: form.containers.map((c) => c.number.trim()).filter(Boolean),
+                weight: form.weight_of_all_containers,
+                goods: form.marchandise_type,
+                packages: form.facture.ligne.nbrs,
+              }}
+            />
 
             {/* Footer — copyright + report a bug (far bottom) */}
             <footer className="mt-auto pt-8 flex flex-col-reverse sm:flex-row items-center justify-between gap-3 border-t border-slate-800/60">

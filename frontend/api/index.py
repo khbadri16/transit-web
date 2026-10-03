@@ -13,6 +13,9 @@ Routes are prefixed with /api because Vercel rewrites /api/* to this file
     POST /api/tracking/akkon -> Akkon Lines BL lookup (vessel, ETA, ...)
     /api/visits/...     -> Visit day: shared list in Upstash Redis, behind
                            the office access code (see api/visit_days.py)
+    POST /api/folder-cover -> folder cover page (PDF) — api/folder_cover_pdf.py
+    POST /api/classify-tariff, /api/classify-products -> HS codes with Gemini
+                           or Claude (provider field) — api/tariff_core.py
 
 Local development (from Web/frontend):
     pip install -r requirements.txt
@@ -21,6 +24,7 @@ The Vite dev server proxies /api/* to http://127.0.0.1:8000 automatically.
 """
 
 import io
+import os
 import re
 import zipfile
 from datetime import datetime
@@ -30,7 +34,7 @@ from typing import Dict, List, Literal, Optional
 from docxtpl import DocxTemplate
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 # --------------------------------------------------------------------------
@@ -1113,24 +1117,158 @@ def visits_pdf(req: VisitPdfIn, request: Request, x_visit_code: str = Header("")
     return _visit_call(request, x_visit_code, run)
 
 
-def _ai_error_detail(exc: Exception) -> str:
+# --------------------------------------------------------------------------
+# Folder cover — the page glued on the front of a client's folder.
+# Logos are image files in api/logos/ (see api/logos/README.txt).
+# --------------------------------------------------------------------------
+
+
+def _fc():
+    try:
+        from api import folder_cover_pdf
+    except ImportError:  # loaded outside the package context
+        import sys
+        if str(BASE_DIR) not in sys.path:
+            sys.path.append(str(BASE_DIR))
+        import folder_cover_pdf
+    return folder_cover_pdf
+
+
+class FolderCoverIn(BaseModel):
+    line: str = ""
+    client: str = ""
+    owner: str = ""
+    destination: str = ""
+    bl: str = ""
+    containers: List[str] = Field(default_factory=list)
+    packages: str = ""
+    weight: str = ""
+    goods: str = ""
+    eta: str = ""                   # dd/mm/yyyy, printed as typed
+
+
+@app.post("/api/folder-cover")
+def folder_cover(req: FolderCoverIn) -> StreamingResponse:
+    if not req.client.strip():
+        raise HTTPException(status_code=400, detail="Client name is required.")
+    fc = _fc()
+    try:
+        pdf_bytes = fc.build_folder_cover(req.model_dump())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Cover PDF generation failed: {exc}") from exc
+    name = fc.slug(req.client)[:40] or "dossier"
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="couverture_{name}.pdf"'},
+    )
+
+
+@app.get("/api/folder-cover/logos")
+def folder_cover_logos():
+    """Which shipping lines have a logo file (slugs: "hmm", "cma-cgm", ...)."""
+    return {"logos": _fc().available_logos()}
+
+
+@app.get("/api/folder-cover/logo/{name}")
+def folder_cover_logo(name: str):
+    path = _fc().logo_path(name)
+    if not path:
+        raise HTTPException(status_code=404, detail="No logo for this line.")
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=3600"})
+
+
+# --------------------------------------------------------------------------
+# Tariff annex — invoice / typed products -> HS codes, with Gemini OR Claude.
+# Same steps for both (api/tariff_core.py); provider = "gemini" | "claude".
+# --------------------------------------------------------------------------
+
+PROVIDERS = ("gemini", "claude")
+
+
+def _tariff_module(provider: str):
+    """api/gemini_tariff.py or api/claude_tariff.py (same functions)."""
+    name = "claude_tariff" if provider == "claude" else "gemini_tariff"
+    try:
+        return __import__(f"api.{name}", fromlist=[name])
+    except ImportError:  # loaded outside the package context
+        import sys
+        if str(BASE_DIR) not in sys.path:
+            sys.path.append(str(BASE_DIR))
+        return __import__(name)
+
+
+def _ai_error_detail(exc: Exception, provider: str = "gemini") -> str:
     """Never leak a raw model/API error to the UI — always a short Arabic
     sentence. The real error goes to the server log."""
     try:
-        from api.gemini_tariff import friendly_error
-
-        return friendly_error(exc)
-    except Exception:                       # gemini module itself unavailable
-        print(f"[tariff] error: {type(exc).__name__}: {exc}", flush=True)
+        return _tariff_module(provider).friendly_error(exc)
+    except Exception:                       # model module itself unavailable
+        print(f"[tariff] error ({provider}): {type(exc).__name__}: {exc}", flush=True)
         return "تعذّر إتمام التصنيف. أعد المحاولة بعد قليل."
+
+
+@app.get("/api/ai-providers")
+def ai_providers():
+    """Which AI models have a key on the server (the page greys out the others)."""
+    return {
+        "gemini": bool(os.environ.get("GEMINI_API_KEY")),
+        "claude": bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")),
+        "claude_code": bool((os.environ.get("CLAUDE_CODE") or "").strip()),
+    }
+
+
+# Claude costs money (prepaid credits): only whoever knows CLAUDE_CODE
+# (Vercel env) can use it. Checked on the SERVER for every Claude request.
+CLAUDE_MAX_FAILS = 8          # wrong codes per IP per 15 minutes
+
+
+def _check_claude_code(code: str, request: Request) -> None:
+    import hmac
+
+    expected = (os.environ.get("CLAUDE_CODE") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=403, detail="خيار Claude مقفل: أضف CLAUDE_CODE في إعدادات Vercel ثم أعد النشر.")
+    if not (code or "").strip():
+        raise HTTPException(status_code=401, detail="أدخل رمز Claude.")
+    key = f"cl:fail:{_client_ip(request) or 'unknown'}"
+    vd = None
+    try:                                   # brute-force guard (best effort)
+        vd = _vd()
+        fails = int(vd.pipeline([["GET", key]])[0] or 0)
+    except Exception:
+        fails = 0
+    if fails >= CLAUDE_MAX_FAILS:
+        raise HTTPException(status_code=429, detail="محاولات كثيرة برمز خاطئ. أعد المحاولة بعد 15 دقيقة.")
+    if not hmac.compare_digest(code.strip().encode("utf-8"), expected.encode("utf-8")):
+        try:
+            if vd:
+                vd.pipeline([["INCR", key], ["EXPIRE", key, 900]])
+        except Exception:
+            pass
+        raise HTTPException(status_code=401, detail="رمز Claude غير صحيح.")
+
+
+class ClaudeUnlockIn(BaseModel):
+    code: str = ""
+
+
+@app.post("/api/claude-unlock")
+def claude_unlock(req: ClaudeUnlockIn, request: Request):
+    """The page checks the code once, then sends it with every Claude request."""
+    _check_claude_code(req.code, request)
+    return {"ok": True}
 
 
 @app.post("/api/classify-tariff")
 async def classify_tariff(
+    request: Request,
     invoice: UploadFile = File(...),
     mode: str = Form("pro"),
+    provider: str = Form("gemini"),
+    x_claude_code: str = Header(""),
 ):
-    """Extract products + HS codes from an invoice image or PDF using Gemini."""
+    """Extract products + HS codes from an invoice image or PDF."""
 
     # --- validation --------------------------------------------------------
     mime_type = invoice.content_type or "application/octet-stream"
@@ -1147,16 +1285,18 @@ async def classify_tariff(
 
     if mode not in ("pro", "normal"):
         mode = "pro"
+    if provider not in PROVIDERS:
+        provider = "gemini"
+    if provider == "claude":
+        _check_claude_code(x_claude_code, request)
 
     # --- classification ----------------------------------------------------
     try:
-        from api.gemini_tariff import classify_invoice
-
-        return classify_invoice(file_bytes, mime_type, mode)
+        return _tariff_module(provider).classify_invoice(file_bytes, mime_type, mode)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=_ai_error_detail(exc))
+        raise HTTPException(status_code=503, detail=_ai_error_detail(exc, provider))
 
 
 class ProductsIn(BaseModel):
@@ -1164,10 +1304,11 @@ class ProductsIn(BaseModel):
 
     products: List[str] = []
     mode: str = "pro"
+    provider: str = "gemini"
 
 
 @app.post("/api/classify-products")
-async def classify_products_endpoint(payload: ProductsIn):
+async def classify_products_endpoint(payload: ProductsIn, request: Request, x_claude_code: str = Header("")):
     """Classify products the agent typed by hand (no invoice image)."""
 
     names = [p.strip() for p in (payload.products or []) if p and p.strip()]
@@ -1179,12 +1320,13 @@ async def classify_products_endpoint(payload: ProductsIn):
         )
 
     mode = payload.mode if payload.mode in ("pro", "normal") else "pro"
+    provider = payload.provider if payload.provider in PROVIDERS else "gemini"
+    if provider == "claude":
+        _check_claude_code(x_claude_code, request)
 
     try:
-        from api.gemini_tariff import classify_products
-
-        return classify_products(names, mode)
+        return _tariff_module(provider).classify_products(names, mode)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=_ai_error_detail(exc))
+        raise HTTPException(status_code=503, detail=_ai_error_detail(exc, provider))

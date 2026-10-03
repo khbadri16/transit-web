@@ -36,6 +36,13 @@ with the BL already searched; CMA CGM and HMM open with the BL copied, and the
 "Arrival notice" button (Noatum's notice page): you type its code, then
 "⚡ Fill BL" searches the BL and sends the arrival date back to the list.
 
+At the end of the Documents page, **Folder cover** prints the A4 page glued on
+the front of a client's folder (French + Arabic titles, black & white
+friendly, sizes adapt to long names and many containers, "Transit Belarbi Tayeb"
+at the bottom): `POST
+/api/folder-cover`, drawn by `frontend/api/folder_cover_pdf.py`. Shipping line
+logos are image files in `frontend/api/logos/` (see the README there).
+
 A fourth page, **Visit day** (`#/visit-day`), is the office's shared list of
 customs visit days, saved on the server in Upstash Redis
 (`frontend/api/visit_days.py`, routes `/api/visits/...`): no visit date yet /
@@ -47,6 +54,16 @@ variables:
 | --- | --- |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | the Upstash database |
 | `VISIT_DAY_CODE` | the office access code (asked once per computer) |
+
+The tariff annex (ملحق التعريفات الجمركية) can read invoices and find HS codes
+with **Gemini or Claude** (switch in the page; same steps for both, see
+`frontend/api/tariff_core.py`). Keys in Vercel:
+
+| Variable | What |
+| --- | --- |
+| `GEMINI_API_KEY` | Google Gemini (optional `GEMINI_MODEL_PRO`, `GEMINI_MODEL_NORMAL`) |
+| `ANTHROPIC_API_KEY` | Claude, from platform.claude.com (optional `CLAUDE_MODEL_PRO` = claude-sonnet-5-5, `CLAUDE_MODEL_NORMAL` = claude-haiku-4-5-20251001) |
+| `CLAUDE_CODE` | the code that unlocks the Claude option (Claude is paid — without the code nobody can use it) |
 
 - `frontend/` — Vite + React + TypeScript + Tailwind CSS v4
   - `frontend/api/index.py` — the FastAPI serverless function

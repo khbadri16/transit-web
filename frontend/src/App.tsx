@@ -759,11 +759,24 @@ function App() {
     (mandatReady ? 1 : 0) +
     (factureReady ? 1 : 0);
 
-  /** Opens Gmail's compose page (works in any browser, no mail app needed). */
+  /** Report a bug by email, subject already written.
+   *  PC: Gmail's compose page (works without any mail app installed).
+   *  Phone/tablet: a mailto: link — it opens the phone's mail app (Gmail,
+   *  Mail…) with the address + subject; Gmail's web compose page does not
+   *  work on phones (it lands on the inbox instead). */
   const bugReportSubject = "Bug Report - Transit Document Generator";
-  const bugReportHref =
-    "https://mail.google.com/mail/?view=cm&fs=1&to=kh.badri16@gmail.com&su=" +
-    encodeURIComponent(bugReportSubject);
+  const isPhone = useMemo(() => {
+    if (typeof navigator === "undefined") return false;
+    const ua = navigator.userAgent || "";
+    return (
+      /Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(ua) ||
+      (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) // iPad asking for the desktop site
+    );
+  }, []);
+  const bugReportHref = isPhone
+    ? `mailto:kh.badri16@gmail.com?subject=${encodeURIComponent(bugReportSubject)}`
+    : "https://mail.google.com/mail/?view=cm&fs=1&to=kh.badri16@gmail.com&su=" +
+      encodeURIComponent(bugReportSubject);
 
   const flash = (message: string, type: Toast["type"]) => {
     setToast({ message, type });
@@ -2823,7 +2836,7 @@ function App() {
               </p>
               <a
                 href={bugReportHref}
-                target="_blank"
+                target={isPhone ? undefined : "_blank"}
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-slate-400 border border-slate-700/70 bg-slate-800/40 transition-colors hover:text-white hover:border-indigo-500/50 hover:bg-indigo-500/10"
                 title="Report a bug"

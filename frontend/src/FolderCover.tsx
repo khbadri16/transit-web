@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ClipboardCopy, FileDown, FolderOpen, Loader2, X } from "lucide-react";
+import { AlertTriangle, ClipboardCopy, FileDown, FolderOpen, KeyRound, Loader2, Lock, X } from "lucide-react";
 
 /* ==========================================================================
  * Folder cover — one A4 page glued on the front of the client's folder.
@@ -10,6 +10,25 @@ import { AlertTriangle, ClipboardCopy, FileDown, FolderOpen, Loader2, X } from "
  * ======================================================================== */
 
 const API_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
+
+/* Personal section: locked by a code (COVER_CODE in Vercel, checked by the
+   server). Typed once, remembered on this PC until Lock. */
+const COVER_CODE_KEY = "cover_code_v1";
+const readCode = () => {
+  try {
+    return localStorage.getItem(COVER_CODE_KEY) || "";
+  } catch {
+    return "";
+  }
+};
+const saveCode = (v: string) => {
+  try {
+    if (v) localStorage.setItem(COVER_CODE_KEY, v);
+    else localStorage.removeItem(COVER_CODE_KEY);
+  } catch {
+    /* private window: the code lives for this visit only */
+  }
+};
 
 const LINES = ["HMM", "CMA CGM", "MSC", "MAERSK", "AKKON", "WHITE LINE", "COSCO", "ARKAS"] as const;
 const OTHER = "OTHER";
@@ -116,6 +135,41 @@ export default function FolderCover({ source }: { source: CoverSource }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
+  const [code, setCode] = useState(readCode);
+  const [codeInput, setCodeInput] = useState("");
+  const [unlockError, setUnlockError] = useState("");
+  const [unlocking, setUnlocking] = useState(false);
+
+  const lock = (message = "") => {
+    saveCode("");
+    setCode("");
+    setUnlockError(message);
+  };
+
+  const unlock = async () => {
+    const typed = codeInput.trim();
+    if (!typed) return setUnlockError("Type the code.");
+    setUnlocking(true);
+    setUnlockError("");
+    try {
+      const res = await fetch(`${API_URL}/api/folder-cover/unlock`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: typed }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(typeof data?.detail === "string" ? data.detail : `Server error (HTTP ${res.status})`);
+      }
+      saveCode(typed);
+      setCode(typed);
+      setCodeInput("");
+    } catch (err) {
+      setUnlockError(err instanceof TypeError ? "Could not reach the server." : err instanceof Error ? err.message : "Unexpected error.");
+    } finally {
+      setUnlocking(false);
+    }
+  };
 
   useEffect(() => {
     fetch(`${API_URL}/api/folder-cover/logos`)
@@ -154,7 +208,7 @@ export default function FolderCover({ source }: { source: CoverSource }) {
     try {
       const res = await fetch(`${API_URL}/api/folder-cover`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-Cover-Code": code },
         body: JSON.stringify({
           line,
           client: c.client,
@@ -170,7 +224,9 @@ export default function FolderCover({ source }: { source: CoverSource }) {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(typeof data?.detail === "string" ? data.detail : `Server error (HTTP ${res.status})`);
+        const detail = typeof data?.detail === "string" ? data.detail : `Server error (HTTP ${res.status})`;
+        if (res.status === 401) return lock(`${detail} The code was changed — type the new one.`);
+        throw new Error(detail);
       }
       const blob = await res.blob();
       const name = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "")?.[1] || "couverture.pdf";
@@ -217,20 +273,62 @@ export default function FolderCover({ source }: { source: CoverSource }) {
             <h2 className="section-title flex-1 !mb-0 flex items-center gap-2">
               <FolderOpen size={17} className="text-indigo-300" /> Folder cover <span className="text-slate-500 font-normal text-sm">غلاف الملف</span>
             </h2>
-            <button
-              type="button"
-              className="btn-ghost"
-              onClick={fillFromForm}
-              disabled={!hasSource}
-              title="Copy client, line, BL, containers, weight and goods from the form above"
-            >
-              <ClipboardCopy size={15} /> Fill from the form above
-            </button>
+            {code && (
+              <>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={fillFromForm}
+                  disabled={!hasSource}
+                  title="Copy client, line, BL, containers, weight and goods from the form above"
+                >
+                  <ClipboardCopy size={15} /> Fill from the form above
+                </button>
+                <button type="button" className="btn-ghost" onClick={() => lock()} title="Lock the folder cover on this computer" aria-label="Lock the folder cover">
+                  <Lock size={15} />
+                </button>
+              </>
+            )}
           </div>
           <p className="text-xs text-slate-400 mb-5">
             One A4 page to glue on the front of the client's folder — simple French + Arabic, for a black &amp; white printer.
             Date, N° déclaration and taxes stay empty for the pen.
           </p>
+
+          {!code ? (
+            <form
+              className="flex flex-wrap items-center gap-3 p-4 rounded-xl border border-slate-700/70 bg-slate-900/40"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void unlock();
+              }}
+            >
+              <span className="grid place-items-center w-10 h-10 rounded-xl bg-indigo-500/15 border border-indigo-400/30 shrink-0">
+                <KeyRound size={18} className="text-indigo-200" />
+              </span>
+              <span className="text-sm text-slate-300 flex-1 min-w-[12rem]">
+                This section is private — type your code to use it on this computer.
+              </span>
+              <input
+                type="password"
+                autoComplete="off"
+                className="input !w-44 !py-2"
+                value={codeInput}
+                onChange={(e) => setCodeInput(e.target.value)}
+                placeholder="Code"
+                aria-label="Folder cover code"
+              />
+              <button type="submit" className="btn-primary !py-2 !px-4 !text-sm" disabled={unlocking}>
+                {unlocking ? <Loader2 size={15} className="animate-spin" /> : <Lock size={15} />} Unlock
+              </button>
+              {unlockError && (
+                <p className="basis-full text-sm text-rose-300 flex items-center gap-1.5">
+                  <AlertTriangle size={14} className="shrink-0" /> {unlockError}
+                </p>
+              )}
+            </form>
+          ) : (
+          <>
 
           {/* shipping line */}
           <div className="mb-4">
@@ -344,6 +442,8 @@ export default function FolderCover({ source }: { source: CoverSource }) {
               <X size={16} className="me-1" /> Clear
             </button>
           </div>
+          </>
+          )}
         </section>
       </div>
     </fieldset>

@@ -1147,8 +1147,20 @@ class FolderCoverIn(BaseModel):
     eta: str = ""                   # dd/mm/yyyy, printed as typed
 
 
+class CoverUnlockIn(BaseModel):
+    code: str = ""
+
+
+@app.post("/api/folder-cover/unlock")
+def folder_cover_unlock(req: CoverUnlockIn, request: Request):
+    """The page checks the code once, then sends it with every cover request."""
+    _check_cover_code(req.code, request)
+    return {"ok": True}
+
+
 @app.post("/api/folder-cover")
-def folder_cover(req: FolderCoverIn) -> StreamingResponse:
+def folder_cover(req: FolderCoverIn, request: Request, x_cover_code: str = Header("")) -> StreamingResponse:
+    _check_cover_code(x_cover_code, request)
     if not req.client.strip():
         raise HTTPException(status_code=400, detail="Client name is required.")
     fc = _fc()
@@ -1218,35 +1230,54 @@ def ai_providers():
     }
 
 
-# Claude costs money (prepaid credits): only whoever knows CLAUDE_CODE
-# (Vercel env) can use it. Checked on the SERVER for every Claude request.
-CLAUDE_MAX_FAILS = 8          # wrong codes per IP per 15 minutes
+# Personal codes (Vercel env), checked on the SERVER for every request:
+#   CLAUDE_CODE  -> the Claude option of the tariff annex (paid credits)
+#   COVER_CODE   -> the Folder cover section
+PERSONAL_MAX_FAILS = 8        # wrong codes per IP per 15 minutes
 
 
-def _check_claude_code(code: str, request: Request) -> None:
+def _check_personal_code(code: str, request: Request, env_names, fail_prefix: str, msgs: Dict[str, str]) -> None:
     import hmac
 
-    expected = (os.environ.get("CLAUDE_CODE") or "").strip()
+    expected = next((v.strip() for v in (os.environ.get(n) or "" for n in env_names) if v.strip()), "")
     if not expected:
-        raise HTTPException(status_code=403, detail="خيار Claude مقفل: أضف CLAUDE_CODE في إعدادات Vercel ثم أعد النشر.")
+        raise HTTPException(status_code=403, detail=msgs["not_set"])
     if not (code or "").strip():
-        raise HTTPException(status_code=401, detail="أدخل رمز Claude.")
-    key = f"cl:fail:{_client_ip(request) or 'unknown'}"
+        raise HTTPException(status_code=401, detail=msgs["empty"])
+    key = f"{fail_prefix}:fail:{_client_ip(request) or 'unknown'}"
     vd = None
     try:                                   # brute-force guard (best effort)
         vd = _vd()
         fails = int(vd.pipeline([["GET", key]])[0] or 0)
     except Exception:
         fails = 0
-    if fails >= CLAUDE_MAX_FAILS:
-        raise HTTPException(status_code=429, detail="محاولات كثيرة برمز خاطئ. أعد المحاولة بعد 15 دقيقة.")
+    if fails >= PERSONAL_MAX_FAILS:
+        raise HTTPException(status_code=429, detail=msgs["locked"])
     if not hmac.compare_digest(code.strip().encode("utf-8"), expected.encode("utf-8")):
         try:
             if vd:
                 vd.pipeline([["INCR", key], ["EXPIRE", key, 900]])
         except Exception:
             pass
-        raise HTTPException(status_code=401, detail="رمز Claude غير صحيح.")
+        raise HTTPException(status_code=401, detail=msgs["wrong"])
+
+
+def _check_claude_code(code: str, request: Request) -> None:
+    _check_personal_code(code, request, ("CLAUDE_CODE",), "cl", {
+        "not_set": "خيار Claude مقفل: أضف CLAUDE_CODE في إعدادات Vercel ثم أعد النشر.",
+        "empty": "أدخل رمز Claude.",
+        "wrong": "رمز Claude غير صحيح.",
+        "locked": "محاولات كثيرة برمز خاطئ. أعد المحاولة بعد 15 دقيقة.",
+    })
+
+
+def _check_cover_code(code: str, request: Request) -> None:
+    _check_personal_code(code, request, ("COVER_CODE",), "fc", {
+        "not_set": "Folder cover is locked: add COVER_CODE in Vercel settings, then redeploy.",
+        "empty": "Type the code.",
+        "wrong": "Wrong code.",
+        "locked": "Too many wrong codes from this network. Try again in 15 minutes.",
+    })
 
 
 class ClaudeUnlockIn(BaseModel):

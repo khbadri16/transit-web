@@ -64,6 +64,7 @@ with **Gemini or Claude** (switch in the page; same steps for both, see
 | `GEMINI_API_KEY` | Google Gemini (optional `GEMINI_MODEL_PRO`, `GEMINI_MODEL_NORMAL`) |
 | `ANTHROPIC_API_KEY` | Claude, from platform.claude.com (optional `CLAUDE_MODEL_PRO` = claude-sonnet-5-5, `CLAUDE_MODEL_NORMAL` = claude-haiku-4-5-20251001) |
 | `CLAUDE_CODE` | the code that unlocks the Claude option (Claude is paid — without the code nobody can use it) |
+| `COVER_CODE` | the code that unlocks the Folder cover section |
 
 - `frontend/` — Vite + React + TypeScript + Tailwind CSS v4
   - `frontend/api/index.py` — the FastAPI serverless function

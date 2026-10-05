@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ClipboardCopy, FileDown, FolderOpen, KeyRound, Loader2, Lock, X } from "lucide-react";
+import { AlertTriangle, ClipboardCopy, FileDown, FolderOpen, KeyRound, Loader2, Lock, Plus, Trash2, X } from "lucide-react";
+import { SIZES, SIZE_ACTIVE, SIZE_STYLES, marqueFor, type Size } from "./containerSizes";
 
 /* ==========================================================================
  * Folder cover — one A4 page glued on the front of the client's folder.
@@ -54,11 +55,16 @@ export type CoverSource = {
   client: string;
   line: string;
   bl: string;
-  containers: string[];
+  containers: { number: string; size: Size }[];
   weight: string;
   goods: string;
   packages: string;
 };
+
+/** One row of the list — same as the Containers section above (number + 20/40/45). */
+type CoverContainer = { id: string; number: string; size: Size };
+
+const newRow = (number = "", size: Size = "20"): CoverContainer => ({ id: crypto.randomUUID(), number, size });
 
 type Cover = {
   lineChoice: string; // one of LINES | OTHER | ""
@@ -67,7 +73,7 @@ type Cover = {
   owner: string;
   destination: string;
   bl: string;
-  containers: string;
+  containers: CoverContainer[];
   packages: string;
   weight: string;
   goods: string;
@@ -83,7 +89,7 @@ const EMPTY: Cover = {
   owner: "",
   destination: "",
   bl: "",
-  containers: "",
+  containers: [],
   packages: "",
   weight: "",
   goods: "",
@@ -101,22 +107,6 @@ const slug = (s: string) =>
 const lineSlug = (s: string) => (slug(s) === "cma" ? "cma-cgm" : slug(s));
 
 const CONTAINER_RE = /[A-Za-z]{4}\s*-?\s*\d{6}\s*-?\s*\d/g;
-
-/** Same rules as the server: one per line, or pasted on one line. */
-function splitContainers(text: string): string[] {
-  const out: string[] = [];
-  for (const chunk of text.split(/[\n,;]+/)) {
-    const found = chunk.match(CONTAINER_RE) ?? [];
-    out.push(...found);
-    for (const tok of chunk.replace(CONTAINER_RE, " ").split(/\s+/)) {
-      if (tok.replace(/[^A-Za-z0-9]/g, "").length >= 4) out.push(tok);
-    }
-  }
-  return out.map((c) => {
-    const t = c.toUpperCase().replace(/[\s\-./]+/g, "");
-    return /^[A-Z]{4}\d{7}$/.test(t) ? `${t.slice(0, 4)} ${t.slice(4)}` : t;
-  });
-}
 
 function lineFromSource(line: string): Pick<Cover, "lineChoice" | "lineOther"> {
   const up = line.trim().toUpperCase();
@@ -178,7 +168,27 @@ export default function FolderCover({ source }: { source: CoverSource }) {
   const set = <K extends keyof Cover>(k: K, v: Cover[K]) => setC((prev) => ({ ...prev, [k]: v }));
 
   const line = c.lineChoice === OTHER ? c.lineOther.trim() : c.lineChoice;
-  const containers = useMemo(() => splitContainers(c.containers), [c.containers]);
+  const filled = useMemo(() => c.containers.filter((r) => r.number.trim()), [c.containers]);
+  /* what the cover prints: one "XXTC<size>" line per size */
+  const perSize = useMemo(() => SIZES.map((s) => ({ s, n: filled.filter((r) => r.size === s).length })).filter((x) => x.n), [filled]);
+
+  const addRow = () => setC((prev) => ({ ...prev, containers: [...prev.containers, newRow()] }));
+  const removeRow = (id: string) => setC((prev) => ({ ...prev, containers: prev.containers.filter((r) => r.id !== id) }));
+  const setSize = (id: string, size: Size) =>
+    setC((prev) => ({ ...prev, containers: prev.containers.map((r) => (r.id === id ? { ...r, size } : r)) }));
+  /** Typing goes in the row; pasting several numbers at once makes one row each (same size). */
+  const setNumber = (id: string, value: string) =>
+    setC((prev) => {
+      const i = prev.containers.findIndex((r) => r.id === id);
+      if (i < 0) return prev;
+      const row = prev.containers[i];
+      const found = value.match(CONTAINER_RE) ?? [];
+      const rows =
+        found.length < 2
+          ? [{ ...row, number: value }]
+          : found.map((n, k) => ({ ...newRow(n.replace(/[\s-]+/g, "").toUpperCase(), row.size), ...(k === 0 ? { id: row.id } : {}) }));
+      return { ...prev, containers: [...prev.containers.slice(0, i), ...rows, ...prev.containers.slice(i + 1)] };
+    });
   const hasSource = !!(source.client || source.line || source.bl || source.containers.length || source.weight || source.goods || source.packages);
 
   const fillFromForm = () => {
@@ -186,7 +196,7 @@ export default function FolderCover({ source }: { source: CoverSource }) {
     if (source.client.trim()) patch.client = source.client.trim();
     if (source.line.trim()) Object.assign(patch, lineFromSource(source.line));
     if (source.bl.trim()) patch.bl = source.bl.trim().toUpperCase();
-    if (source.containers.length) patch.containers = source.containers.join("\n");
+    if (source.containers.length) patch.containers = source.containers.map((x) => newRow(x.number, x.size));
     if (source.weight.trim()) patch.weight = source.weight.trim();
     if (source.goods.trim()) patch.goods = source.goods.trim();
     if (source.packages.trim()) patch.packages = source.packages.trim();
@@ -202,6 +212,7 @@ export default function FolderCover({ source }: { source: CoverSource }) {
     if (c.lineChoice === OTHER && !c.lineOther.trim()) return setError("Type the name of the shipping line.");
     if (!c.client.trim()) return setError("Type the client name.");
     if (c.depotOn && !c.depot.trim()) return setError("Type the depot name, or turn Dépôt off.");
+    if (filled.length > 60) return setError(`The cover holds up to 60 containers (you have ${filled.length}).`);
     setBusy(true);
     try {
       const res = await fetch(`${API_URL}/api/folder-cover`, {
@@ -213,7 +224,7 @@ export default function FolderCover({ source }: { source: CoverSource }) {
           owner: c.owner,
           destination: c.destination,
           bl: c.bl,
-          containers,
+          containers: filled.map((r) => ({ number: r.number.trim(), size: r.size })),
           packages: c.packages,
           weight: c.weight,
           goods: c.goods,
@@ -408,12 +419,12 @@ export default function FolderCover({ source }: { source: CoverSource }) {
                 <span className="flex-1">{label("Dépôt", "المستودع", false, true)}</span>
               </label>
               <input
-                className="input uppercase disabled:opacity-40 disabled:cursor-not-allowed"
+                className="input uppercase placeholder:normal-case disabled:opacity-40 disabled:cursor-not-allowed"
                 dir="auto"
                 value={c.depot}
                 onChange={(e) => set("depot", e.target.value)}
                 disabled={!c.depotOn}
-                placeholder={c.depotOn ? "e.g. SNTR" : "Turn on if the folder is at a depot"}
+                placeholder={c.depotOn ? "e.g. SNTR" : "Turn on if at a depot"}
               />
               {c.depotOn && c.depot.trim() && (
                 <span className="text-[11px] text-slate-500">
@@ -421,15 +432,80 @@ export default function FolderCover({ source }: { source: CoverSource }) {
                 </span>
               )}
             </div>
-            <label className="flex flex-col gap-1.5 md:col-span-2">
-              {label(`Containers${containers.length ? ` (${containers.length})` : ""}`, "الحاويات")}
-              <textarea
-                className="input font-mono uppercase min-h-[5.5rem] resize-y"
-                value={c.containers}
-                onChange={(e) => set("containers", e.target.value)}
-                placeholder={"One per line, or paste them all:\nHMMU6458810 TGHU6123457 SEGU7701234"}
-              />
-            </label>
+            {/* containers — same rows as the Containers section above */}
+            <div className="flex flex-col gap-2 md:col-span-2">
+              <div className="flex items-center gap-3">
+                <span className="flex-1">{label(`Containers${filled.length ? ` (${filled.length})` : ""}`, "الحاويات")}</span>
+                <button type="button" onClick={addRow} className="btn-ghost shrink-0">
+                  <Plus size={16} /> <span className="hidden sm:inline">Add container</span>
+                  <span className="sm:hidden">Add</span>
+                </button>
+              </div>
+              {perSize.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {perSize.map(({ s, n }) => (
+                    <span key={s} className={`text-xs font-mono font-semibold px-2.5 py-1 rounded-lg border ${SIZE_STYLES[s]}`}>
+                      {String(n).padStart(2, "0")}TC{s}
+                    </span>
+                  ))}
+                  <span className="text-[11px] text-slate-500">— one line per size on the cover</span>
+                </div>
+              )}
+              {c.containers.length === 0 ? (
+                <button
+                  type="button"
+                  onClick={addRow}
+                  className="w-full text-center py-6 rounded-xl border border-dashed border-slate-700 text-slate-500 hover:border-indigo-500/60 hover:text-slate-300 transition-colors"
+                >
+                  No containers yet — click to add the first one.
+                </button>
+              ) : (
+                <div className="space-y-2.5">
+                  {c.containers.map((r, index) => (
+                    <div
+                      key={r.id}
+                      className="container-row flex flex-wrap sm:flex-nowrap items-center gap-2.5 sm:gap-3 p-2.5 rounded-xl bg-slate-900/50 border border-slate-700/70 hover:border-indigo-500/40 transition-colors"
+                    >
+                      <span className="grid place-items-center w-7 h-7 shrink-0 rounded-lg bg-slate-800 text-slate-400 text-xs font-mono">{index + 1}</span>
+                      <span
+                        className={`hidden md:inline-block shrink-0 text-[11px] font-mono font-semibold px-2 py-1 rounded-md border ${SIZE_STYLES[r.size]}`}
+                        title="Size (TC20 / TC40 / TC45)"
+                      >
+                        {marqueFor(r.size)}
+                      </span>
+                      <input
+                        type="text"
+                        placeholder="Container number (e.g. CMAU9753972)"
+                        value={r.number}
+                        onChange={(e) => setNumber(r.id, e.target.value)}
+                        className="flex-1 min-w-0 basis-full sm:basis-auto order-last sm:order-none bg-transparent px-1 py-1.5 font-mono text-sm text-white uppercase placeholder:normal-case placeholder-slate-600 focus:outline-none"
+                      />
+                      <div className="seg shrink-0 ml-auto sm:ml-0" role="group" aria-label="Container size">
+                        {SIZES.map((s) => (
+                          <button
+                            key={s}
+                            type="button"
+                            onClick={() => setSize(r.id, s)}
+                            className={`seg-btn ${r.size === s ? `seg-active ${SIZE_ACTIVE[s]}` : ""}`}
+                          >
+                            {s}'
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeRow(r.id)}
+                        className="p-2 sm:p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-400/10 transition-colors shrink-0"
+                        title="Remove"
+                        aria-label="Remove container"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-4 md:col-span-2 md:grid-cols-3">
               <label className="flex flex-col gap-1.5">
                 {label("Packages (all)", "عدد الطرود")}

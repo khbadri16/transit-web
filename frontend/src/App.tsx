@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ArabicKeyboard } from "./ArabicKeyboard";
 import { DcpClientBook, rememberDcpClient } from "./DcpClientBook";
 import FolderCover from "./FolderCover";
+import { SIZE_ACTIVE, SIZE_STYLES, marqueFor, type Size } from "./containerSizes";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -32,8 +33,6 @@ import {
 /* --------------------------------------------------------------------------
  * Types
  * ------------------------------------------------------------------------ */
-
-type Size = "20" | "40" | "45";
 
 type Container = {
   id: string;
@@ -403,21 +402,6 @@ const maskDmy = (raw: string) => {
 /* --------------------------------------------------------------------------
  * UI constants
  * ------------------------------------------------------------------------ */
-
-const SIZE_STYLES: Record<Size, string> = {
-  "20": "bg-sky-500/15 text-sky-300 border-sky-500/30",
-  "40": "bg-violet-500/15 text-violet-300 border-violet-500/30",
-  "45": "bg-amber-500/15 text-amber-300 border-amber-500/30",
-};
-
-const SIZE_ACTIVE: Record<Size, string> = {
-  "20": "seg-active-sky",
-  "40": "seg-active-violet",
-  "45": "seg-active-amber",
-};
-
-/** Marque shown on MISE A QUAI: always 01TC{size}. */
-const marqueFor = (size: Size) => `01TC${size}`;
 
 /** Shipping companies — one is chosen per generation and printed on every
  *  MISE A QUAI. "OTHER" lets the user type a custom company name. */
@@ -2819,7 +2803,9 @@ function App() {
                 client: form.client_name,
                 line: companyName,
                 bl: form.bl_number,
-                containers: form.containers.map((c) => c.number.trim()).filter(Boolean),
+                containers: form.containers
+                  .filter((c) => c.number.trim())
+                  .map((c) => ({ number: c.number.trim(), size: c.size })),
                 weight: form.weight_of_all_containers,
                 goods: form.marchandise_type,
                 packages: form.facture.ligne.nbrs,

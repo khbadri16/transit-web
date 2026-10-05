@@ -29,7 +29,7 @@ import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Union
 
 from docxtpl import DocxTemplate
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Header, Request
@@ -1134,13 +1134,18 @@ def _fc():
     return folder_cover_pdf
 
 
+class CoverContainerIn(BaseModel):
+    number: str = ""
+    size: str = ""                  # "20" | "40" | "45" -> "02TC40 : ..." on the cover
+
+
 class FolderCoverIn(BaseModel):
     line: str = ""
     client: str = ""
     owner: str = ""
     destination: str = ""
     bl: str = ""
-    containers: List[str] = Field(default_factory=list)
+    containers: List[Union[CoverContainerIn, str]] = Field(default_factory=list)
     packages: str = ""
     weight: str = ""
     goods: str = ""

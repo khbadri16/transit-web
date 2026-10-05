@@ -1149,6 +1149,7 @@ class FolderCoverIn(BaseModel):
     packages: str = ""
     weight: str = ""
     goods: str = ""
+    eta: str = ""                   # dd/mm/yyyy -> "21 Octobre 2026"; empty = box left for the pen
     depot: str = ""                 # e.g. "SNTR" -> printed "Dépôt-SNTR"; empty = not at a depot
     belongs_to: str = ""            # "Appartient à / ملك ل": the name alone, top of the page
 

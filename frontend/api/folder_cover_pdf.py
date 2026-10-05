@@ -12,7 +12,8 @@ The page adapts to its content: a long client name goes to 2-3 lines and
 shrinks, many containers go in 4-5 columns, and when everything together is
 too tall the whole page is scaled down a little until the pen boxes at the
 bottom (Date / N° Déclaration / Taxes) still fit. The arrival box at the top
-is a pen box too: only its title is printed, the date is written by hand.
+always shows: with the date typed in the form, or empty with a line for the
+pen when the form leaves it empty.
 
 Optional: the name of the person the folder belongs to ("Appartient à / ملك ل"
 in the form) is printed alone in a thin box at the very top, and when the
@@ -149,6 +150,24 @@ def fmt_int(v: str) -> str:
     if m:
         return f"{int(m.group(1)):,}".replace(",", " ") + "," + m.group(2)
     return t
+
+
+MOIS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août",
+        "Septembre", "Octobre", "Novembre", "Décembre"]
+
+
+def fmt_date_fr(v: str) -> str:
+    """'21/10/2026' -> '21 Octobre 2026' ; anything else is kept as typed."""
+    t = clean(v, 20)
+    m = re.fullmatch(r"(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2}|\d{4})", t)
+    if not m:
+        return t
+    day, month, year = int(m.group(1)), int(m.group(2)), m.group(3)
+    if not (1 <= day <= 31 and 1 <= month <= 12):
+        return t
+    if len(year) == 2:
+        year = f"20{year}"
+    return f"{day:02d} {MOIS[month - 1]} {year}"
 
 
 def fmt_container(c: str) -> str:
@@ -313,11 +332,15 @@ def _render(pdf: _Pdf, d: Dict, s: float, extra: float = 0.0) -> float:
     bw = W - M - bx
     pdf.box(bx, top, bw, hh, 0.7)
     pdf.label(bx + pad, top + 3 * s, bw - 2 * pad, "Arrivée", "تاريخ الوصول", lab)
-    # left empty for the pen, like the boxes at the bottom
-    pdf.set_draw_color(*LINE_GREY)
-    pdf.set_line_width(0.3)
-    pdf.line(bx + pad, top + hh - 9 * s, bx + bw - pad, top + hh - 9 * s)
-    pdf.set_draw_color(*INK)
+    if d["eta"]:
+        eta_size = pdf.fit(d["eta"], bw - 2 * pad, 26 * s, 14)
+        pdf.text_at(bx + pad, top + 3 * s + lab_h, bw - 2 * pad, hh - 6 * s - lab_h, d["eta"], eta_size, True)
+    else:
+        # no date in the form: left empty for the pen, like the boxes at the bottom
+        pdf.set_draw_color(*LINE_GREY)
+        pdf.set_line_width(0.3)
+        pdf.line(bx + pad, top + hh - 9 * s, bx + bw - pad, top + hh - 9 * s)
+        pdf.set_draw_color(*INK)
     y = top + hh + 8 * s + extra
 
     # ---- client ---------------------------------------------------------------
@@ -468,6 +491,7 @@ def normalize(data: Dict) -> Dict:
         "packages": fmt_int(data.get("packages", "")),
         "weight": fmt_int(data.get("weight", "")),
         "goods": clean(data.get("goods"), 80),
+        "eta": fmt_date_fr(data.get("eta", "")),
         "depot": depot if is_ar(depot) else depot.upper(),
         "belongs_to": clean(data.get("belongs_to"), 60),
     }

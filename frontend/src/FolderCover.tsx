@@ -78,6 +78,7 @@ type Cover = {
   weight: string;
   goods: string;
   belongsTo: string; // "Appartient à / ملك ل" — printed alone at the top
+  eta: string; // dd/mm/yyyy; empty = the Arrivée box stays empty for the pen
   depotOn: boolean;
   depot: string; // "SNTR" -> "Dépôt-SNTR" next to the BL
 };
@@ -94,6 +95,7 @@ const EMPTY: Cover = {
   weight: "",
   goods: "",
   belongsTo: "",
+  eta: "",
   depotOn: false,
   depot: "",
 };
@@ -105,6 +107,13 @@ const slug = (s: string) =>
     .replace(/^-+|-+$/g, "");
 
 const lineSlug = (s: string) => (slug(s) === "cma" ? "cma-cgm" : slug(s));
+
+const maskDate = (value: string) => {
+  const d = value.replace(/\D/g, "").slice(0, 8);
+  if (d.length <= 2) return d;
+  if (d.length <= 4) return `${d.slice(0, 2)}/${d.slice(2)}`;
+  return `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}`;
+};
 
 const CONTAINER_RE = /[A-Za-z]{4}\s*-?\s*\d{6}\s*-?\s*\d/g;
 
@@ -228,6 +237,7 @@ export default function FolderCover({ source }: { source: CoverSource }) {
           packages: c.packages,
           weight: c.weight,
           goods: c.goods,
+          eta: c.eta,
           depot: c.depotOn ? c.depot : "",
           belongs_to: c.belongsTo,
         }),
@@ -302,7 +312,7 @@ export default function FolderCover({ source }: { source: CoverSource }) {
           </div>
           <p className="text-xs text-slate-400 mb-5">
             One A4 page to glue on the front of the client's folder — simple French + Arabic, for a black &amp; white printer.
-            Arrival date, date, N° déclaration and taxes stay empty for the pen.
+            Date, N° déclaration and taxes stay empty for the pen — the arrival date too, when you leave it empty.
           </p>
 
           {!code ? (
@@ -340,11 +350,18 @@ export default function FolderCover({ source }: { source: CoverSource }) {
           ) : (
           <>
 
-          {/* who the folder belongs to: the name alone, at the top of the cover */}
-          <label className="flex flex-col gap-1.5 mb-4 max-w-md">
-            {label("Appartient à", "ملك ل", false, true)}
-            <input className="input" dir="auto" value={c.belongsTo} onChange={(e) => set("belongsTo", e.target.value)} placeholder="e.g. شكيب" />
-          </label>
+          {/* top of the cover: who the folder belongs to (name alone) | arrival date */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <label className="flex flex-col gap-1.5">
+              {label("Appartient à", "ملك ل", false, true)}
+              <input className="input" dir="auto" value={c.belongsTo} onChange={(e) => set("belongsTo", e.target.value)} placeholder="e.g. شكيب" />
+            </label>
+            <label className="flex flex-col gap-1.5">
+              {label("Arrival (ETA)", "تاريخ الوصول", false, true)}
+              <input className="input" inputMode="numeric" value={c.eta} onChange={(e) => set("eta", maskDate(e.target.value))} placeholder="dd/mm/yyyy" />
+              <span className="text-[11px] text-slate-500">Leave empty: the Arrivée box stays on the cover, empty for the pen.</span>
+            </label>
+          </div>
 
           {/* shipping line */}
           <div className="mb-4">

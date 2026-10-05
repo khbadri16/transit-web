@@ -39,8 +39,8 @@ with the BL already searched; CMA CGM and HMM open with the BL copied, and the
 At the end of the Documents page, **Folder cover** prints the A4 page glued on
 the front of a client's folder (French + Arabic titles, black & white
 friendly, sizes adapt to long names and many containers, "Transit Belarbi Tayeb"
-at the bottom; the arrival date, date, N° déclaration and taxes boxes are left
-empty to fill by hand; optional: the name the folder belongs to — "Appartient
+at the bottom; the date, N° déclaration and taxes boxes are left empty to fill
+by hand, and the arrival date too when the form leaves it empty; optional: the name the folder belongs to — "Appartient
 à / ملك ل" — alone at the top, and a "Dépôt-SNTR" box next to the BL when the
 folder is at a depot; containers are added like in the Containers section —
 number + 20'/40'/45' — and printed one line per size, "02TC20 : HMMU6458810

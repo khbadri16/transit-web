@@ -1144,7 +1144,6 @@ class FolderCoverIn(BaseModel):
     packages: str = ""
     weight: str = ""
     goods: str = ""
-    eta: str = ""                   # dd/mm/yyyy, printed as typed
 
 
 class CoverUnlockIn(BaseModel):

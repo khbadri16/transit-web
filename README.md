@@ -39,7 +39,8 @@ with the BL already searched; CMA CGM and HMM open with the BL copied, and the
 At the end of the Documents page, **Folder cover** prints the A4 page glued on
 the front of a client's folder (French + Arabic titles, black & white
 friendly, sizes adapt to long names and many containers, "Transit Belarbi Tayeb"
-at the bottom): `POST
+at the bottom; the arrival date, date, N° déclaration and taxes boxes are left
+empty to fill by hand): `POST
 /api/folder-cover`, drawn by `frontend/api/folder_cover_pdf.py`. Shipping line
 logos are image files in `frontend/api/logos/` (see the README there).
 

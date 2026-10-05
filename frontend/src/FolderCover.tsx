@@ -71,7 +71,6 @@ type Cover = {
   packages: string;
   weight: string;
   goods: string;
-  eta: string;
 };
 
 const EMPTY: Cover = {
@@ -85,7 +84,6 @@ const EMPTY: Cover = {
   packages: "",
   weight: "",
   goods: "",
-  eta: "",
 };
 
 const slug = (s: string) =>
@@ -113,13 +111,6 @@ function splitContainers(text: string): string[] {
     return /^[A-Z]{4}\d{7}$/.test(t) ? `${t.slice(0, 4)} ${t.slice(4)}` : t;
   });
 }
-
-const maskDate = (value: string) => {
-  const d = value.replace(/\D/g, "").slice(0, 8);
-  if (d.length <= 2) return d;
-  if (d.length <= 4) return `${d.slice(0, 2)}/${d.slice(2)}`;
-  return `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}`;
-};
 
 function lineFromSource(line: string): Pick<Cover, "lineChoice" | "lineOther"> {
   const up = line.trim().toUpperCase();
@@ -219,7 +210,6 @@ export default function FolderCover({ source }: { source: CoverSource }) {
           packages: c.packages,
           weight: c.weight,
           goods: c.goods,
-          eta: c.eta,
         }),
       });
       if (!res.ok) {
@@ -292,7 +282,7 @@ export default function FolderCover({ source }: { source: CoverSource }) {
           </div>
           <p className="text-xs text-slate-400 mb-5">
             One A4 page to glue on the front of the client's folder — simple French + Arabic, for a black &amp; white printer.
-            Date, N° déclaration and taxes stay empty for the pen.
+            Arrival date, date, N° déclaration and taxes stay empty for the pen.
           </p>
 
           {!code ? (
@@ -389,13 +379,9 @@ export default function FolderCover({ source }: { source: CoverSource }) {
               <input className="input" dir="auto" value={c.destination} onChange={(e) => set("destination", e.target.value)} placeholder="e.g. Sétif" />
             </label>
             <p className="md:col-span-2 -mt-2 text-[11px] text-slate-500">Owner and destination: leave empty and they are not printed on the cover.</p>
-            <label className="flex flex-col gap-1.5">
+            <label className="flex flex-col gap-1.5 md:col-span-2">
               {label("BL number", "رقم بوليصة الشحن")}
               <input className="input font-mono uppercase" value={c.bl} onChange={(e) => set("bl", e.target.value.replace(/\s+/g, ""))} placeholder="e.g. HDMUNBOA7731250" />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              {label("Arrival (ETA)", "تاريخ الوصول")}
-              <input className="input" inputMode="numeric" value={c.eta} onChange={(e) => set("eta", maskDate(e.target.value))} placeholder="dd/mm/yyyy" />
             </label>
             <label className="flex flex-col gap-1.5 md:col-span-2">
               {label(`Containers${containers.length ? ` (${containers.length})` : ""}`, "الحاويات")}

@@ -10,6 +10,10 @@ too tall the whole page is scaled down a little until the pen boxes at the
 bottom (Date / N° Déclaration / Taxes) still fit. The arrival box at the top
 is a pen box too: only its title is printed, the date is written by hand.
 
+Optional: the name of the person the folder belongs to ("Appartient à / ملك ل"
+in the form) is printed alone in a thin box at the very top, and when the
+folder is at a depot, "Dépôt-<name>" goes in a stamp-like box next to N° BL.
+
 Shipping line logos: put the image in api/logos/ named after the line
 (hmm.png, cma-cgm.png, msc.png, maersk.png, akkon.png, white-line.png,
 cosco.png, arkas.png — or any other line: "Turkon Line" -> turkon-line.png).
@@ -257,34 +261,43 @@ def _render(pdf: _Pdf, d: Dict, s: float, extra: float = 0.0) -> float:
     lab = 10.5 * s                    # label size (pt)
     lab_h = lab * PT * 1.6
 
+    # ---- who the folder belongs to (optional): the name alone, very top -----
+    top = M
+    if d["belongs_to"]:
+        bh = 13 * s
+        pdf.box(M, M, INNER, bh, 0.5)
+        size = pdf.fit(d["belongs_to"], INNER - 2 * pad, 22 * s, 10)
+        pdf.text_at(M, M, INNER, bh, d["belongs_to"], size, True, "C")
+        top = M + bh + 5 * s
+
     # ---- header: shipping line (logo + name) | arrival -------------------
     hh = 32 * s
     lw_box = 78
-    pdf.box(M, M, lw_box, hh, 0.8)
+    pdf.box(M, top, lw_box, hh, 0.8)
     line = d["line"]
     logo = logo_path(line)
     if logo:
         # the logo alone — every logo already shows the line's name
         inset = 4.0 * s
         try:
-            pdf.image(logo_image(logo), x=M + inset + 1.5, y=M + inset, w=lw_box - 2 * inset - 3, h=hh - 2 * inset,
+            pdf.image(logo_image(logo), x=M + inset + 1.5, y=top + inset, w=lw_box - 2 * inset - 3, h=hh - 2 * inset,
                       keep_aspect_ratio=True)
         except Exception:
             logo = None
     if not logo:
         size = pdf.fit(line or " ", lw_box - 2 * pad, 32 * s, 12)
-        pdf.text_at(M, M, lw_box, hh, line, size, True, "C")
+        pdf.text_at(M, top, lw_box, hh, line, size, True, "C")
 
     bx = M + lw_box + 6
     bw = W - M - bx
-    pdf.box(bx, M, bw, hh, 0.7)
-    pdf.label(bx + pad, M + 3 * s, bw - 2 * pad, "Arrivée", "تاريخ الوصول", lab)
+    pdf.box(bx, top, bw, hh, 0.7)
+    pdf.label(bx + pad, top + 3 * s, bw - 2 * pad, "Arrivée", "تاريخ الوصول", lab)
     # left empty for the pen, like the boxes at the bottom
     pdf.set_draw_color(*LINE_GREY)
     pdf.set_line_width(0.3)
-    pdf.line(bx + pad, M + hh - 9 * s, bx + bw - pad, M + hh - 9 * s)
+    pdf.line(bx + pad, top + hh - 9 * s, bx + bw - pad, top + hh - 9 * s)
     pdf.set_draw_color(*INK)
-    y = M + hh + 8 * s + extra
+    y = top + hh + 8 * s + extra
 
     # ---- client ---------------------------------------------------------------
     pdf.label(M, y, INNER, "Client", "الزبون", 11.5 * s)
@@ -318,12 +331,21 @@ def _render(pdf: _Pdf, d: Dict, s: float, extra: float = 0.0) -> float:
     pdf.line(M, y + 1, W - M, y + 1)
     y += 6 * s + extra
 
-    # ---- N° BL -------------------------------------------------------------------
+    # ---- N° BL | Dépôt (optional) ----------------------------------------------
     bl_h = 30 * s
-    pdf.box(M, y, INNER, bl_h)
-    pdf.label(M + pad, y + 3 * s, INNER - 2 * pad, "N° BL", "رقم بوليصة الشحن", lab)
-    size = pdf.fit(d["bl"] or " ", INNER - 2 * pad, 26 * s, 12)
-    pdf.text_at(M + pad, y + 3 * s + lab_h, INNER - 2 * pad, bl_h - 6 * s - lab_h, d["bl"], size, True)
+    bl_w = INNER
+    if d["depot"]:
+        dep_w = 66
+        bl_w = INNER - dep_w - 6
+        dx = M + bl_w + 6
+        pdf.box(dx, y, dep_w, bl_h, 1.4)
+        text = f"Dépôt-{d['depot']}"
+        size = pdf.fit(text, dep_w - 2 * pad, 24 * s, 10)
+        pdf.text_at(dx, y, dep_w, bl_h, text, size, True, "C")
+    pdf.box(M, y, bl_w, bl_h)
+    pdf.label(M + pad, y + 3 * s, bl_w - 2 * pad, "N° BL", "رقم بوليصة الشحن", lab)
+    size = pdf.fit(d["bl"] or " ", bl_w - 2 * pad, 26 * s, 12)
+    pdf.text_at(M + pad, y + 3 * s + lab_h, bl_w - 2 * pad, bl_h - 6 * s - lab_h, d["bl"], size, True)
     y += bl_h + 7 * s + extra
 
     # ---- containers --------------------------------------------------------------
@@ -400,6 +422,8 @@ def normalize(data: Dict) -> Dict:
     raw_line = clean(data.get("line"), 40)
     line = LINES.get(raw_line.upper(), raw_line.upper() if not is_ar(raw_line) else raw_line)
     client = clean(data.get("client"), 160)
+    # "SNTR" -> Dépôt-SNTR ; a typed "Depot SNTR" must not print Dépôt-DEPOT SNTR
+    depot = re.sub(r"^d[ée]p[ôo]t\b[\s\-:]*", "", clean(data.get("depot"), 40), flags=re.I)
     return {
         "line": line,
         "client": client if is_ar(client) else client.upper(),
@@ -410,6 +434,8 @@ def normalize(data: Dict) -> Dict:
         "packages": fmt_int(data.get("packages", "")),
         "weight": fmt_int(data.get("weight", "")),
         "goods": clean(data.get("goods"), 80),
+        "depot": depot if is_ar(depot) else depot.upper(),
+        "belongs_to": clean(data.get("belongs_to"), 60),
     }
 
 

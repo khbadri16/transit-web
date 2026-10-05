@@ -1144,6 +1144,8 @@ class FolderCoverIn(BaseModel):
     packages: str = ""
     weight: str = ""
     goods: str = ""
+    depot: str = ""                 # e.g. "SNTR" -> printed "Dépôt-SNTR"; empty = not at a depot
+    belongs_to: str = ""            # "Appartient à / ملك ل": the name alone, top of the page
 
 
 class CoverUnlockIn(BaseModel):

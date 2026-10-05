@@ -71,6 +71,9 @@ type Cover = {
   packages: string;
   weight: string;
   goods: string;
+  belongsTo: string; // "Appartient à / ملك ل" — printed alone at the top
+  depotOn: boolean;
+  depot: string; // "SNTR" -> "Dépôt-SNTR" next to the BL
 };
 
 const EMPTY: Cover = {
@@ -84,6 +87,9 @@ const EMPTY: Cover = {
   packages: "",
   weight: "",
   goods: "",
+  belongsTo: "",
+  depotOn: false,
+  depot: "",
 };
 
 const slug = (s: string) =>
@@ -195,6 +201,7 @@ export default function FolderCover({ source }: { source: CoverSource }) {
     if (!c.lineChoice) return setError("Choose the shipping line.");
     if (c.lineChoice === OTHER && !c.lineOther.trim()) return setError("Type the name of the shipping line.");
     if (!c.client.trim()) return setError("Type the client name.");
+    if (c.depotOn && !c.depot.trim()) return setError("Type the depot name, or turn Dépôt off.");
     setBusy(true);
     try {
       const res = await fetch(`${API_URL}/api/folder-cover`, {
@@ -210,6 +217,8 @@ export default function FolderCover({ source }: { source: CoverSource }) {
           packages: c.packages,
           weight: c.weight,
           goods: c.goods,
+          depot: c.depotOn ? c.depot : "",
+          belongs_to: c.belongsTo,
         }),
       });
       if (!res.ok) {
@@ -320,6 +329,12 @@ export default function FolderCover({ source }: { source: CoverSource }) {
           ) : (
           <>
 
+          {/* who the folder belongs to: the name alone, at the top of the cover */}
+          <label className="flex flex-col gap-1.5 mb-4 max-w-md">
+            {label("Appartient à", "ملك ل", false, true)}
+            <input className="input" dir="auto" value={c.belongsTo} onChange={(e) => set("belongsTo", e.target.value)} placeholder="e.g. شكيب" />
+          </label>
+
           {/* shipping line */}
           <div className="mb-4">
             {label("Shipping line", "الشركة البحرية", true)}
@@ -379,10 +394,33 @@ export default function FolderCover({ source }: { source: CoverSource }) {
               <input className="input" dir="auto" value={c.destination} onChange={(e) => set("destination", e.target.value)} placeholder="e.g. Sétif" />
             </label>
             <p className="md:col-span-2 -mt-2 text-[11px] text-slate-500">Owner and destination: leave empty and they are not printed on the cover.</p>
-            <label className="flex flex-col gap-1.5 md:col-span-2">
+            <label className="flex flex-col gap-1.5">
               {label("BL number", "رقم بوليصة الشحن")}
               <input className="input font-mono uppercase" value={c.bl} onChange={(e) => set("bl", e.target.value.replace(/\s+/g, ""))} placeholder="e.g. HDMUNBOA7731250" />
             </label>
+            <div className="flex flex-col gap-1.5">
+              <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                <span className="relative shrink-0" dir="ltr">
+                  <input type="checkbox" checked={c.depotOn} onChange={(e) => set("depotOn", e.target.checked)} className="peer sr-only" />
+                  <span className="block w-8 h-5 rounded-full bg-slate-700 peer-checked:bg-indigo-500 transition-colors" />
+                  <span className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform peer-checked:translate-x-3" />
+                </span>
+                <span className="flex-1">{label("Dépôt", "المستودع", false, true)}</span>
+              </label>
+              <input
+                className="input uppercase disabled:opacity-40 disabled:cursor-not-allowed"
+                dir="auto"
+                value={c.depot}
+                onChange={(e) => set("depot", e.target.value)}
+                disabled={!c.depotOn}
+                placeholder={c.depotOn ? "e.g. SNTR" : "Turn on if the folder is at a depot"}
+              />
+              {c.depotOn && c.depot.trim() && (
+                <span className="text-[11px] text-slate-500">
+                  Printed next to the BL: <b className="text-slate-300">Dépôt-{c.depot.trim().replace(/^d[ée]p[ôo]t\b[\s\-:]*/i, "").toUpperCase()}</b>
+                </span>
+              )}
+            </div>
             <label className="flex flex-col gap-1.5 md:col-span-2">
               {label(`Containers${containers.length ? ` (${containers.length})` : ""}`, "الحاويات")}
               <textarea

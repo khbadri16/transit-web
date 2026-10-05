@@ -4,8 +4,12 @@ Folder cover — the page glued on the front of a client's folder (A4)
 Model 3 "French + Arabic": every title in simple French and in Arabic, big
 values, made for a black & white printer (frames only, no dark fills).
 
+Containers are grouped by size, one line per size in the Mise à Quai style:
+"02TC20 :  HMMU6458810  TGHU6123457" then "01TC40 :  ...", numbers printed as
+typed (no space added).
+
 The page adapts to its content: a long client name goes to 2-3 lines and
-shrinks, 10+ containers go in 4-5 columns, and when everything together is
+shrinks, many containers go in 4-5 columns, and when everything together is
 too tall the whole page is scaled down a little until the pen boxes at the
 bottom (Date / N° Déclaration / Taxes) still fit. The arrival box at the top
 is a pen box too: only its title is printed, the date is written by hand.
@@ -148,25 +152,42 @@ def fmt_int(v: str) -> str:
 
 
 def fmt_container(c: str) -> str:
-    c = re.sub(r"[\s\-./]+", "", c.upper())
-    return f"{c[:4]} {c[4:]}" if re.fullmatch(r"[A-Z]{4}\d{7}", c) else c
+    """Printed as typed, upper case, no space added: HMMU6458810."""
+    return re.sub(r"[\s\-./]+", "", c.upper())
+
+
+SIZES = ("20", "40", "45")
 
 
 CONTAINER_RE = re.compile(r"[A-Za-z]{4}\s*-?\s*\d{6}\s*-?\s*\d")
 
 
-def split_containers(raw) -> List[str]:
-    """Containers typed one per line, or pasted on one line, comma separated..."""
-    text = "\n".join(map(str, raw)) if isinstance(raw, list) else str(raw or "")
+def split_numbers(text: str) -> List[str]:
+    """One container per field, or several pasted together, comma separated..."""
     out: List[str] = []
     for chunk in re.split(r"[\n,;]+", text):
-        found = CONTAINER_RE.findall(chunk)
-        out.extend(found)
-        rest = CONTAINER_RE.sub(" ", chunk)
-        for tok in rest.split():
+        out.extend(CONTAINER_RE.findall(chunk))
+        for tok in CONTAINER_RE.sub(" ", chunk).split():
             if len(re.sub(r"[^A-Za-z0-9]", "", tok)) >= 4:   # other formats, kept as typed
                 out.append(tok)
-    return [fmt_container(c) for c in out][:60]
+    return [fmt_container(c) for c in out]
+
+
+def group_containers(raw) -> List[Tuple[str, List[str]]]:
+    """[{number, size}, ...] -> [("20", [...]), ("40", [...]), ("45", [...])].
+    A container sent without a size (plain string) goes last, with no XXTC prefix."""
+    by: Dict[str, List[str]] = {}
+    total = 0
+    for item in raw or []:
+        if isinstance(item, dict):
+            number, size = str(item.get("number") or ""), str(item.get("size") or "")
+        else:
+            number, size = str(item or ""), ""
+        for c in split_numbers(number):
+            if total < 60:
+                by.setdefault(size if size in SIZES else "", []).append(c)
+                total += 1
+    return [(k, by[k]) for k in (*SIZES, "") if by.get(k)]
 
 
 # --------------------------------------------------------------------------
@@ -349,22 +370,35 @@ def _render(pdf: _Pdf, d: Dict, s: float, extra: float = 0.0) -> float:
     y += bl_h + 7 * s + extra
 
     # ---- containers --------------------------------------------------------------
-    conts = d["containers"]
-    n = len(conts)
-    cols = 3 if n <= 3 else 4 if n <= 16 else 5
-    cw = (INNER - 2 * pad) / cols
+    # one line per size: "02TC40 :  HMMU6458810  TGHU6123457", wrapping under the numbers
+    groups = d["containers"]
+    n = sum(len(g) for _, g in groups)
+    heads = [f"{len(g):02d}TC{sz} :" if sz else "" for sz, g in groups]
+    most = max([len(g) for _, g in groups] + [1])
+    cols = 3 if most <= 3 else 4 if most <= 12 else 5
+    avail = INNER - 2 * pad
+
+    def head_w(sz: float) -> float:
+        return max([pdf.width(h, sz) for h in heads] + [0]) + (3.5 if any(heads) else 0)
+
     size = 19 * s
-    for c in conts:
-        size = min(size, pdf.fit(c, cw - 3, 19 * s, 8))
-    rows = max(1, -(-n // cols))
+    while size > 8 and any(pdf.width(c, size) > (avail - head_w(size)) / cols - 3 for _, g in groups for c in g):
+        size -= 0.5
+    hw = head_w(size)
+    cw = (avail - hw) / cols
     row_h = size * PT * 1.55
-    c_h = 3 * s + lab_h + 3 * s + rows * row_h + 4 * s
-    c_h = max(c_h, 32 * s)
+    ggap = 1.5 * s
+    rows = sum(-(-len(g) // cols) for _, g in groups)
+    body = max(row_h, rows * row_h + max(0, len(groups) - 1) * ggap)
+    c_h = max(32 * s, 3 * s + lab_h + 3 * s + body + 4 * s)
     pdf.box(M, y, INNER, c_h)
     pdf.label(M + pad, y + 3 * s, INNER - 2 * pad, f"Conteneurs ({n})" if n else "Conteneurs", "الحاويات", lab)
     cy = y + 3 * s + lab_h + 3 * s
-    for i, c in enumerate(conts):
-        pdf.text_at(M + pad + (i % cols) * cw, cy + (i // cols) * row_h, cw, row_h, c, size, True)
+    for head, (_, g) in zip(heads, groups):
+        pdf.text_at(M + pad, cy, hw, row_h, head, size, True)
+        for i, c in enumerate(g):
+            pdf.text_at(M + pad + hw + (i % cols) * cw, cy + (i // cols) * row_h, cw, row_h, c, size, True)
+        cy += -(-len(g) // cols) * row_h + ggap
     y += c_h + 7 * s + extra
 
     # ---- colis / poids / marchandise ---------------------------------------------
@@ -430,7 +464,7 @@ def normalize(data: Dict) -> Dict:
         "owner": clean(data.get("owner"), 80),
         "destination": clean(data.get("destination"), 80),
         "bl": re.sub(r"\s+", "", clean(data.get("bl"), 40)).upper(),
-        "containers": split_containers(data.get("containers")),
+        "containers": group_containers(data.get("containers")),
         "packages": fmt_int(data.get("packages", "")),
         "weight": fmt_int(data.get("weight", "")),
         "goods": clean(data.get("goods"), 80),

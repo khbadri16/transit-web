@@ -42,7 +42,9 @@ friendly, sizes adapt to long names and many containers, "Transit Belarbi Tayeb"
 at the bottom; the arrival date, date, N° déclaration and taxes boxes are left
 empty to fill by hand; optional: the name the folder belongs to — "Appartient
 à / ملك ل" — alone at the top, and a "Dépôt-SNTR" box next to the BL when the
-folder is at a depot): `POST
+folder is at a depot; containers are added like in the Containers section —
+number + 20'/40'/45' — and printed one line per size, "02TC20 : HMMU6458810
+TGHU6123457"): `POST
 /api/folder-cover`, drawn by `frontend/api/folder_cover_pdf.py`. Shipping line
 logos are image files in `frontend/api/logos/` (see the README there).
 

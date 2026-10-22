@@ -256,8 +256,9 @@ type DcpFieldDef = {
   label: string;
   /** Item number printed on the paper, e.g. (1) */
   num?: string;
-  /** "rc" = registre de commerce composite (nn/nn-nnnnnnn + letter + nn) */
-  type: "text" | "date" | "rc";
+  /** "rc" = registre de commerce composite (nn/nn-nnnnnnn + letter + nn)
+   *  "company" = shipping company buttons (+ أخرى… to type one) */
+  type: "text" | "date" | "rc" | "company";
   placeholder?: string;
   /** Static unit shipped with the value (e.g. DA, طن) */
   suffix?: string;
@@ -302,8 +303,9 @@ const DCP_ROWS: DcpFieldDef[][] = [
   ],
   [{ key: "الصانع", num: "10", label: "الصانع", type: "text" }],
   [{ key: "مكان_المصدر", num: "11", label: "مكان المصدر", type: "text" }],
-  /* The placeholder in DCP.docx stays مرجع_النقل — only the label changed. */
-  [{ key: "مرجع_النقل", num: "14", label: "شركة النقل", type: "text" }],
+  /* The placeholder in DCP.docx stays مرجع_النقل — only the label changed.
+     Picked with one click (same companies as the Containers section). */
+  [{ key: "مرجع_النقل", num: "14", label: "شركة النقل", type: "company" }],
   [{ key: "وثائق_النقل", num: "15", label: "رقم ال BL", type: "text" }],
   [
     { key: "الانطلاق_من", num: "16", label: "الانطلاق من", type: "text" },
@@ -327,9 +329,14 @@ const RC_PARTS = [
 ] as const;
 const RC_LETTER_KEY = "رقم_س_ت_حرف";
 
+/* شركة النقل: "1" while أخرى… is chosen (the name is typed). Screen only —
+   the server reads مرجع_النقل, which always holds the name to print. */
+const DCP_COMPANY_OTHER_KEY = "مرجع_النقل_أخرى";
+
 const initialDcp: Record<string, string> = {
   ...Object.fromEntries(DCP_ALL_FIELDS.map((f) => [f.key, ""])),
   ...Object.fromEntries(RC_PARTS.map((p) => [p.key, ""])),
+  [DCP_COMPANY_OTHER_KEY]: "",
   [RC_LETTER_KEY]: "ب", // most common letter — editable
   معروض_في: "طرود", // default — editable
   القيمة_عملة: "USD",
@@ -421,7 +428,19 @@ const maskDmy = (raw: string) => {
 
 /** Shipping companies — one is chosen per generation and printed on every
  *  MISE A QUAI. "OTHER" lets the user type a custom company name. */
-const COMPANIES: string[] = ["CMA", "AKKON", "MSC", "HMM", "WHITE LINE", "COSCO", "MAERSK", "ARKAS"];
+const COMPANIES: string[] = ["CMA CGM", "AKKON", "MSC", "HMM", "WHITE LINE", "COSCO", "MAERSK", "ARKAS"];
+
+/** One colour per company — the company buttons (Containers and DCP شركة النقل). */
+const COMPANY_COLORS: Record<string, string> = {
+  "CMA CGM": "#3b82f6",
+  AKKON: "#ef4444",
+  MSC: "#eab308",
+  HMM: "#f97316",
+  "WHITE LINE": "#e2e8f0",
+  COSCO: "#14b8a6",
+  MAERSK: "#38bdf8",
+  ARKAS: "#a78bfa",
+};
 
 /* --------------------------------------------------------------------------
  * Mandat MSC (autorisation aux mandataires)
@@ -1267,7 +1286,9 @@ function App() {
 
   const applyHistoryEntry = (entry: HistoryEntry) => {
     const p = entry.payload;
-    const savedCompany = (p.company_name ?? "").trim().toUpperCase();
+    const savedName = (p.company_name ?? "").trim().toUpperCase();
+    // entries saved before the rename: "CMA" is now "CMA CGM"
+    const savedCompany = savedName === "CMA" ? "CMA CGM" : savedName;
     setForm({
       transit_name: p.transit_name ?? "",
       client_name: p.client_name ?? "",
@@ -1610,17 +1631,21 @@ function App() {
                       <button
                         key={c}
                         type="button"
+                        aria-pressed={form.company_choice === c}
                         onClick={() =>
                           setForm((prev) => ({
                             ...prev,
                             company_choice: prev.company_choice === c ? "" : c,
                           }))
                         }
-                        className={`px-3 py-1.5 rounded-lg border text-xs font-bold tracking-wide transition-colors ${
-                          form.company_choice === c
-                            ? "bg-indigo-500/25 border-indigo-400/70 text-indigo-100"
-                            : "border-slate-700 text-slate-400 hover:border-indigo-500/40 hover:text-slate-200"
+                        className={`co-chip ${c === "OTHER" ? "co-chip-other" : ""} ${
+                          form.company_choice === c ? "co-chip-on" : ""
                         }`}
+                        style={
+                          c === "OTHER"
+                            ? undefined
+                            : ({ "--co": COMPANY_COLORS[c] } as React.CSSProperties)
+                        }
                       >
                         {c === "OTHER" ? "Other…" : c}
                       </button>
@@ -1883,6 +1908,13 @@ function App() {
                                   setLetterRef={(el) => {
                                     dcpInputRefs.current[RC_LETTER_KEY] = el;
                                   }}
+                                />
+                              ) : f.type === "company" ? (
+                                <DcpCompanyField
+                                  key={f.key}
+                                  def={f}
+                                  dcp={form.dcp}
+                                  onChange={updateDcp}
                                 />
                               ) : (
                                 <DcpField
@@ -3157,6 +3189,88 @@ function DcpField({
         )}
       </div>
       {hint && <p className="text-[11px] text-slate-500">{hint}</p>}
+    </div>
+  );
+}
+
+/* --- (14) شركة النقل: one click on a company, or أخرى… to type one ---------- */
+function DcpCompanyField({
+  def,
+  dcp,
+  onChange,
+}: {
+  def: DcpFieldDef;
+  dcp: Record<string, string>;
+  onChange: (key: string, value: string) => void;
+}) {
+  const otherRef = useRef<HTMLInputElement | null>(null);
+  const value = dcp[def.key] ?? "";
+  const known = COMPANIES.find((c) => c === value.trim().toUpperCase());
+  /* أخرى… is on when chosen, or for a name that has no button (older history) */
+  const isOther = dcp[DCP_COMPANY_OTHER_KEY] === "1" || (value.trim() !== "" && !known);
+
+  const pick = (c: string) => {
+    onChange(DCP_COMPANY_OTHER_KEY, "");
+    onChange(def.key, !isOther && known === c ? "" : c); // a second click unselects
+  };
+  const pickOther = () => {
+    if (isOther) {
+      onChange(DCP_COMPANY_OTHER_KEY, "");
+      onChange(def.key, "");
+      return;
+    }
+    onChange(DCP_COMPANY_OTHER_KEY, "1");
+    onChange(def.key, "");
+    window.setTimeout(() => otherRef.current?.focus(), 0);
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-sm font-medium text-slate-300 flex items-center gap-2">
+        {def.num && <span className="dcp-num">({def.num})</span>}
+        {def.label}
+      </label>
+      <div className="flex flex-wrap items-center gap-2">
+        {COMPANIES.map((c) => {
+          const on = !isOther && known === c;
+          return (
+            <button
+              key={c}
+              type="button"
+              dir="ltr"
+              aria-pressed={on}
+              onClick={() => pick(c)}
+              className={`co-chip ${on ? "co-chip-on" : ""}`}
+              style={{ "--co": COMPANY_COLORS[c] } as React.CSSProperties}
+            >
+              {c}
+            </button>
+          );
+        })}
+        <button
+          type="button"
+          aria-pressed={isOther}
+          onClick={pickOther}
+          className={`co-chip co-chip-other ${isOther ? "co-chip-on" : ""}`}
+        >
+          أخرى…
+        </button>
+        {isOther && (
+          <input
+            ref={otherRef}
+            type="text"
+            dir="auto"
+            className="input !w-56 max-w-full flex-none"
+            value={value}
+            onChange={(e) => {
+              onChange(DCP_COMPANY_OTHER_KEY, "1");
+              onChange(def.key, e.target.value);
+            }}
+            onBlur={() => onChange(def.key, value.trim().toUpperCase())}
+            placeholder="اسم الشركة"
+          />
+        )}
+      </div>
     </div>
   );
 }

@@ -154,6 +154,50 @@ body {
   color: #fcd34d;
 }
 
+/* Shipping company buttons (Containers + DCP شركة النقل) — each company has its colour (--co) */
+.co-chip {
+  --co: #94a3b8;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.75rem;
+  border-radius: 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--co) 45%, transparent);
+  background: color-mix(in srgb, var(--co) 12%, transparent);
+  color: color-mix(in srgb, var(--co) 70%, #e2e8f0);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s, transform 0.1s;
+}
+.co-chip:hover {
+  border-color: color-mix(in srgb, var(--co) 75%, transparent);
+  background: color-mix(in srgb, var(--co) 20%, transparent);
+  color: #f8fafc;
+}
+.co-chip:active {
+  transform: scale(0.97);
+}
+.co-chip:focus-visible {
+  outline: 2px solid var(--co);
+  outline-offset: 2px;
+}
+.co-chip-on {
+  background: color-mix(in srgb, var(--co) 28%, #0d111b);
+  border-color: var(--co);
+  color: #fff;
+  box-shadow: 0 0 0 1px var(--co), 0 6px 18px -6px color-mix(in srgb, var(--co) 70%, transparent);
+}
+.co-chip-other {
+  border-style: dashed;
+}
+/* Bigger touch targets on phones */
+@media (max-width: 640px) {
+  .co-chip {
+    padding: 0.55rem 0.8rem;
+  }
+}
+
 /* Row entrance animation */
 .container-row {
   animation: rowIn 0.2s ease;

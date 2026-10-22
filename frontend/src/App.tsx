@@ -269,6 +269,8 @@ type DcpFieldDef = {
   inputMode?: "numeric";
   /** القيمة بالدينار — computed live from القيمة × the fixed rate */
   autoDa?: boolean;
+  /** Typed in kg, kept (and printed) in tonnes — 17255 -> 17.255 */
+  kgToTon?: boolean;
 };
 
 /** Fields grouped exactly like the lines of the printed DCP paper. */
@@ -287,7 +289,9 @@ const DCP_ROWS: DcpFieldDef[][] = [
     /* Only the number is typed — "طرد" is a static unit added on generation. */
     { key: "متكون_من", num: "5", label: "متكون من", type: "text", placeholder: "عدد الطرود", suffix: "طرد", suffixEnd: true, inputMode: "numeric" },
   ],
-  [{ key: "الكمية", num: "6", label: "الكمية", type: "text", placeholder: "الكمية بالأطنان", suffix: "طن", suffixEnd: true }],
+  /* The placeholder in DCP.docx / the PDF stays الكمية (and the paper still
+     prints "الكمية" in tonnes) — only the on-screen label changed. */
+  [{ key: "الكمية", num: "6", label: "الوزن", type: "text", placeholder: "الوزن بالكيلوغرام (kg)", suffix: "طن", suffixEnd: true, inputMode: "numeric", kgToTon: true }],
   [
     { key: "فاتورة_الشراء", num: "8", label: "رقم فاتورة الشراء", type: "text" },
     { key: "القيمة", num: "9", label: "القيمة", type: "text", currency: true },
@@ -388,6 +392,18 @@ const convertToDa = (dcp: Record<string, string>): string => {
   const rate = daRateFor(dcp);
   const amount = parseAmount(dcp["القيمة"] ?? "");
   return rate === null || amount === null ? "" : fmtDa(amount * rate);
+};
+
+/** الوزن: kg typed -> tonnes kept ("17255" -> "17.255"); other text stays as typed. */
+const kgToTon = (kg: string): string => {
+  const n = parseAmount(kg);
+  return n === null ? kg : String(Number((n / 1000).toFixed(6)));
+};
+
+/** The kept tonnes shown back in kg while the box is edited ("17.255" -> "17255"). */
+const tonToKg = (ton: string): string => {
+  const n = parseAmount(ton);
+  return n === null ? ton : String(Number((n * 1000).toFixed(3)));
 };
 
 
@@ -1874,7 +1890,13 @@ function App() {
                                   def={f}
                                   value={f.autoDa ? daValue : form.dcp[f.key] ?? ""}
                                   readOnly={f.autoDa && daRate !== null}
-                                  hint={f.autoDa ? daHint : undefined}
+                                  hint={
+                                    f.autoDa
+                                      ? daHint
+                                      : f.kgToTon
+                                        ? "اكتب الوزن بالكيلوغرام — يتحول إلى الطن تلقائيًا"
+                                        : undefined
+                                  }
                                   dcp={form.dcp}
                                   kbOpen={kbField === f.key}
                                   onChange={updateDcp}
@@ -3032,13 +3054,23 @@ function DcpField({
   hint?: React.ReactNode;
 }) {
   const isDate = def.type === "date";
-  /* A computed field can't be typed in — no Arabic keyboard for it. */
-  const showKb = !isDate && !readOnly;
+  /* الوزن: while the box has focus it shows the kg being typed; the form
+     always keeps the tonnes, shown again as soon as the box is left. */
+  const [kgDraft, setKgDraft] = useState<string | null>(null);
+  const suffix = def.kgToTon && kgDraft !== null ? "kg" : def.suffix;
+  /* A computed field can't be typed in — no Arabic keyboard for it
+     (nor for الوزن, which takes digits only). */
+  const showKb = !isDate && !readOnly && !def.kgToTon;
   const isSpec =
     def.currency && (dcp["القيمة_عملة"] || DEFAULT_CURRENCY) === "SPEC";
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
+    if (def.kgToTon) {
+      setKgDraft(v);
+      onChange(def.key, kgToTon(v));
+      return;
+    }
     // dates: auto-mask into dd/mm/yyyy while typing (not while deleting)
     onChange(def.key, isDate && v.length > value.length ? maskDmy(v) : v);
   };
@@ -3079,8 +3111,8 @@ function DcpField({
             )}
           </>
         )}
-        {def.suffix && !def.suffixEnd && (
-          <span className="unit-suffix">{def.suffix}</span>
+        {suffix && !def.suffixEnd && (
+          <span className="unit-suffix">{suffix}</span>
         )}
         <div className="relative flex-1 min-w-0">
           <input
@@ -3094,8 +3126,10 @@ function DcpField({
             className={`input ${showKb ? "!pl-10" : ""} ${
               readOnly ? "dcp-computed" : ""
             }`}
-            value={value}
+            value={kgDraft ?? value}
             onChange={handleChange}
+            onFocus={def.kgToTon ? () => setKgDraft(tonToKg(value)) : undefined}
+            onBlur={def.kgToTon ? () => setKgDraft(null) : undefined}
             onKeyDown={(e) => {
               if (e.key === "Escape") onEscape();
             }}
@@ -3118,8 +3152,8 @@ function DcpField({
           )}
         </div>
         {/* unit — far left of the box (end of the RTL row) */}
-        {def.suffix && def.suffixEnd && (
-          <span className="unit-suffix">{def.suffix}</span>
+        {suffix && def.suffixEnd && (
+          <span className="unit-suffix">{suffix}</span>
         )}
       </div>
       {hint && <p className="text-[11px] text-slate-500">{hint}</p>}

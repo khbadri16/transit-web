@@ -154,7 +154,7 @@ body {
   color: #fcd34d;
 }
 
-/* Shipping company buttons (DCP شركة النقل) — each company has its colour (--co) */
+/* Shipping company buttons (Containers + DCP شركة النقل) — each company has its colour (--co) */
 .co-chip {
   --co: #94a3b8;
   display: inline-flex;

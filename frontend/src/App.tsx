@@ -430,7 +430,7 @@ const maskDmy = (raw: string) => {
  *  MISE A QUAI. "OTHER" lets the user type a custom company name. */
 const COMPANIES: string[] = ["CMA CGM", "AKKON", "MSC", "HMM", "WHITE LINE", "COSCO", "MAERSK", "ARKAS"];
 
-/** One colour per company — the DCP شركة النقل buttons. */
+/** One colour per company — the company buttons (Containers and DCP شركة النقل). */
 const COMPANY_COLORS: Record<string, string> = {
   "CMA CGM": "#3b82f6",
   AKKON: "#ef4444",
@@ -1631,18 +1631,23 @@ function App() {
                       <button
                         key={c}
                         type="button"
+                        aria-pressed={form.company_choice === c}
                         onClick={() =>
                           setForm((prev) => ({
                             ...prev,
                             company_choice: prev.company_choice === c ? "" : c,
                           }))
                         }
-                        className={`px-3 py-1.5 rounded-lg border text-xs font-bold tracking-wide transition-colors ${
-                          form.company_choice === c
-                            ? "bg-indigo-500/25 border-indigo-400/70 text-indigo-100"
-                            : "border-slate-700 text-slate-400 hover:border-indigo-500/40 hover:text-slate-200"
+                        className={`co-chip ${c === "OTHER" ? "co-chip-other" : ""} ${
+                          form.company_choice === c ? "co-chip-on" : ""
                         }`}
+                        style={
+                          c === "OTHER"
+                            ? undefined
+                            : ({ "--co": COMPANY_COLORS[c] } as React.CSSProperties)
+                        }
                       >
+                        {c !== "OTHER" && <span className="co-dot" />}
                         {c === "OTHER" ? "Other…" : c}
                       </button>
                     ))}

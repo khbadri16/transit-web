@@ -13,7 +13,9 @@ Routes are prefixed with /api because Vercel rewrites /api/* to this file
     POST /api/tracking/akkon -> Akkon Lines BL lookup (vessel, ETA, ...)
     /api/visits/...     -> Visit day: shared list in Upstash Redis, behind
                            the office access code (see api/visit_days.py)
-    POST /api/folder-cover -> folder cover page (PDF) — api/folder_cover_pdf.py
+    POST /api/folder-cover -> folder cover page (PDF) — api/folder_cover_pdf.py;
+                           also adds the client's line to the Google Sheet
+                           (api/cover_sheet.py)
     POST /api/classify-tariff, /api/classify-products -> HS codes with Gemini
                            or Claude (provider field) — api/tariff_core.py
 
@@ -70,7 +72,7 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition"],
+    expose_headers=["Content-Disposition", "X-Cover-Sheet", "X-Cover-Sheet-Error"],
 )
 
 # --------------------------------------------------------------------------
@@ -1134,6 +1136,17 @@ def _fc():
     return folder_cover_pdf
 
 
+def _cs():
+    try:
+        from api import cover_sheet
+    except ImportError:  # loaded outside the package context
+        import sys
+        if str(BASE_DIR) not in sys.path:
+            sys.path.append(str(BASE_DIR))
+        import cover_sheet
+    return cover_sheet
+
+
 class CoverContainerIn(BaseModel):
     number: str = ""
     size: str = ""                  # "20" | "40" | "45" -> "02TC40 : ..." on the cover
@@ -1176,11 +1189,21 @@ def folder_cover(req: FolderCoverIn, request: Request, x_cover_code: str = Heade
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Cover PDF generation failed: {exc}") from exc
     name = fc.slug(req.client)[:40] or "dossier"
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="couverture_{name}.pdf"'},
-    )
+    # one line per client in the Google Sheet (COVER_SHEET_URL) — never blocks the cover
+    cs = _cs()
+    try:
+        data = req.model_dump()
+        sheet, reason = cs.record(cs.row(data, fc.normalize(data)))
+    except Exception as exc:
+        print(f"[cover-sheet] {exc!r}")
+        sheet, reason = "failed", "the line could not be prepared"
+    headers = {
+        "Content-Disposition": f'attachment; filename="couverture_{name}.pdf"',
+        "X-Cover-Sheet": sheet,
+    }
+    if reason:
+        headers["X-Cover-Sheet-Error"] = reason
+    return StreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
 
 
 @app.get("/api/folder-cover/logos")

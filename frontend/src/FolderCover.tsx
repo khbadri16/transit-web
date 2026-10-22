@@ -258,6 +258,15 @@ export default function FolderCover({ source }: { source: CoverSource }) {
       a.click();
       a.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+      /* the server also writes the client's line in the Google Sheet ("off" = not set up) */
+      const sheet = res.headers.get("X-Cover-Sheet");
+      if (sheet === "added" || sheet === "updated") {
+        setNote(sheet === "added" ? "Cover ready — added to the clients sheet." : "Cover ready — this BL was already in the clients sheet: its line was updated.");
+        window.setTimeout(() => setNote(""), 6000);
+      } else if (sheet === "failed") {
+        const why = res.headers.get("X-Cover-Sheet-Error");
+        setError(`The cover was made, but the clients sheet was not updated${why ? `: ${why}` : ""}.`);
+      }
     } catch (err) {
       setError(
         err instanceof TypeError

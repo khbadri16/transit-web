@@ -48,6 +48,22 @@ TGHU6123457"): `POST
 /api/folder-cover`, drawn by `frontend/api/folder_cover_pdf.py`. Shipping line
 logos are image files in `frontend/api/logos/` (see the README there).
 
+Every cover also writes the client's line in a **Google Sheet** (one table, one
+line per client: Date added · Client · Appartient à · Shipping line · BL ·
+Containers · Packages · Weight · Goods · Depot). The server does it, so covers
+made on any computer land in the same sheet; a cover printed again for the
+same BL updates that line instead of adding a new one. If the sheet can't be
+reached the cover still downloads and the page shows a warning
+(`frontend/api/cover_sheet.py`). Setup, once: paste
+[`cover-sheet/Code.gs`](cover-sheet/Code.gs) in the sheet (Extensions → Apps
+Script) and deploy it as a web app — the steps are at the top of that file —
+then add in Vercel:
+
+| Variable | What |
+| --- | --- |
+| `COVER_SHEET_URL` | the web app link (ends with `/exec`) — without it covers work as before, nothing is sent |
+| `COVER_SHEET_SECRET` | the same word as `SECRET` in `Code.gs` |
+
 A fourth page, **Visit day** (`#/visit-day`), is the office's shared list of
 customs visit days, saved on the server in Upstash Redis
 (`frontend/api/visit_days.py`, routes `/api/visits/...`): no visit date yet /

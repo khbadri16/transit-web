@@ -1647,7 +1647,6 @@ function App() {
                             : ({ "--co": COMPANY_COLORS[c] } as React.CSSProperties)
                         }
                       >
-                        {c !== "OTHER" && <span className="co-dot" />}
                         {c === "OTHER" ? "Other…" : c}
                       </button>
                     ))}
@@ -3244,7 +3243,6 @@ function DcpCompanyField({
               className={`co-chip ${on ? "co-chip-on" : ""}`}
               style={{ "--co": COMPANY_COLORS[c] } as React.CSSProperties}
             >
-              <span className="co-dot" />
               {c}
             </button>
           );

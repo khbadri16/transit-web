@@ -52,7 +52,9 @@ Every cover also writes the client's line in a **Google Sheet** (one table, one
 line per client: Date added · Client · Appartient à · Shipping line · BL ·
 Containers · Packages · Weight · Goods · Depot). The server does it, so covers
 made on any computer land in the same sheet; a cover printed again for the
-same BL updates that line instead of adding a new one. If the sheet can't be
+same BL updates that line instead of adding a new one (without a BL nothing
+can be matched: each print adds a line). To let colleagues open the table,
+share the sheet with their Gmail addresses. If the sheet can't be
 reached the cover still downloads and the page shows a warning
 (`frontend/api/cover_sheet.py`). Setup, once: paste
 [`cover-sheet/Code.gs`](cover-sheet/Code.gs) in the sheet (Extensions → Apps

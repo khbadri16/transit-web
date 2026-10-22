@@ -28,6 +28,7 @@ The Vite dev server proxies /api/* to http://127.0.0.1:8000 automatically.
 import io
 import os
 import re
+import urllib.parse
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -1202,7 +1203,8 @@ def folder_cover(req: FolderCoverIn, request: Request, x_cover_code: str = Heade
         "X-Cover-Sheet": sheet,
     }
     if reason:
-        headers["X-Cover-Sheet-Error"] = reason
+        # percent-encoded: a header must be ASCII, the reason can be French/Arabic
+        headers["X-Cover-Sheet-Error"] = urllib.parse.quote(reason, safe=" ():,.'=/-")
     return StreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
 
 

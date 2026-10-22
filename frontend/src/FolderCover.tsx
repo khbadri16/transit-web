@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ClipboardCopy, FileDown, FolderOpen, KeyRound, Loader2, Lock, Plus, Trash2, X } from "lucide-react";
 import { SIZES, SIZE_ACTIVE, SIZE_STYLES, marqueFor, type Size } from "./containerSizes";
 
@@ -131,6 +131,14 @@ export default function FolderCover({ source }: { source: CoverSource }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
+  /* one timer for the green note: a newer note is never wiped by an older timer */
+  const noteTimer = useRef<number | undefined>(undefined);
+  const showNote = (text: string, ms: number) => {
+    window.clearTimeout(noteTimer.current);
+    setNote(text);
+    noteTimer.current = text ? window.setTimeout(() => setNote(""), ms) : undefined;
+  };
+  useEffect(() => () => window.clearTimeout(noteTimer.current), []);
   const [code, setCode] = useState(readCode);
   const [codeInput, setCodeInput] = useState("");
   const [unlockError, setUnlockError] = useState("");
@@ -211,12 +219,12 @@ export default function FolderCover({ source }: { source: CoverSource }) {
     if (source.packages.trim()) patch.packages = source.packages.trim();
     setC((prev) => ({ ...prev, ...patch }));
     const n = Object.keys(patch).length;
-    setNote(n ? "Filled from the form above — check and complete the rest." : "The form above is empty.");
-    window.setTimeout(() => setNote(""), 4000);
+    showNote(n ? "Filled from the form above — check and complete the rest." : "The form above is empty.", 4000);
   };
 
   const generate = async () => {
     setError("");
+    showNote("", 0);
     if (!c.lineChoice) return setError("Choose the shipping line.");
     if (c.lineChoice === OTHER && !c.lineOther.trim()) return setError("Type the name of the shipping line.");
     if (!c.client.trim()) return setError("Type the client name.");
@@ -261,10 +269,14 @@ export default function FolderCover({ source }: { source: CoverSource }) {
       /* the server also writes the client's line in the Google Sheet ("off" = not set up) */
       const sheet = res.headers.get("X-Cover-Sheet");
       if (sheet === "added" || sheet === "updated") {
-        setNote(sheet === "added" ? "Cover ready — added to the clients sheet." : "Cover ready — this BL was already in the clients sheet: its line was updated.");
-        window.setTimeout(() => setNote(""), 6000);
+        showNote(sheet === "added" ? "Cover ready — added to the clients sheet." : "Cover ready — this BL was already in the clients sheet: its line was updated.", 6000);
       } else if (sheet === "failed") {
-        const why = res.headers.get("X-Cover-Sheet-Error");
+        let why = res.headers.get("X-Cover-Sheet-Error") || "";
+        try {
+          why = decodeURIComponent(why); // sent percent-encoded (French/Arabic text)
+        } catch {
+          /* keep it as received */
+        }
         setError(`The cover was made, but the clients sheet was not updated${why ? `: ${why}` : ""}.`);
       }
     } catch (err) {

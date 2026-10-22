@@ -77,10 +77,13 @@ def record(line: Dict) -> Tuple[str, str]:
         {"secret": (os.environ.get("COVER_SHEET_SECRET") or "").strip(), **line},
         ensure_ascii=False,
     ).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=body, method="POST",
-        headers={"Content-Type": "application/json; charset=utf-8"},
-    )
+    try:
+        req = urllib.request.Request(
+            url, data=body, method="POST",
+            headers={"Content-Type": "application/json; charset=utf-8"},
+        )
+    except ValueError:  # e.g. pasted without https://
+        return "failed", "COVER_SHEET_URL is not a full link (it must start with https:// and end with /exec)"
     try:
         # Apps Script answers with a redirect to the result: urllib follows it
         # as a GET, which is what Google expects.
@@ -89,7 +92,10 @@ def record(line: Dict) -> Tuple[str, str]:
     except urllib.error.HTTPError as exc:
         print(f"[cover-sheet] HTTP {exc.code}")
         return "failed", f"Google answered HTTP {exc.code}"
-    except Exception as exc:  # timeout, DNS, connection reset...
+    except TimeoutError:
+        print("[cover-sheet] timeout")
+        return "failed", "Google did not answer in time (the line may still have been added)"
+    except Exception as exc:  # DNS, connection reset...
         print(f"[cover-sheet] {exc!r}")
         return "failed", "Google Sheets could not be reached"
     try:
@@ -99,8 +105,7 @@ def record(line: Dict) -> Tuple[str, str]:
         print(f"[cover-sheet] not JSON: {raw[:200]!r}")
         return "failed", "the sheet link did not answer (check the deployment: Who has access = Anyone)"
     if not isinstance(answer, dict) or not answer.get("ok"):
-        reason = str(answer.get("error") if isinstance(answer, dict) else "") or "unknown error"
+        reason = str((answer.get("error") if isinstance(answer, dict) else "") or "").strip() or "unknown error"
         print(f"[cover-sheet] refused: {reason}")
-        # sent back in a response header: printable ASCII only
-        return "failed", re.sub(r"[^\x20-\x7e]", "?", reason)[:120]
+        return "failed", reason[:200]
     return ("updated" if answer.get("action") == "updated" else "added"), ""

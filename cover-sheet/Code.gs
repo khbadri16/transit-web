@@ -3,7 +3,8 @@
  * ---------------------------------------------------------------
  * Every cover generated on the site (from any computer) sends its line here.
  * A cover printed again for the same BL updates that line (the "Date added"
- * stays the first one) instead of adding a second line.
+ * stays the first one) instead of adding a second line. A cover without a BL
+ * can't be matched: each print adds a new line.
  *
  * Setup (once):
  *   1. Create a Google Sheet (sheets.google.com -> Blank).
@@ -14,13 +15,18 @@
  *        Execute as:      Me
  *        Who has access:  Anyone
  *      Deploy -> Authorize access -> choose your Google account. If Google says
- *      "Google hasn't verified this app": Advanced -> Go to ... (unsafe) ->
- *      Allow (it is your own script, it only touches this sheet).
- *   4. Copy the "Web app" URL (ends with /exec).
+ *      "Google hasn't verified this app": Advanced -> Go to ... (unsafe).
+ *      Google then says the script can see and edit your spreadsheets: Allow
+ *      (it is your own script; the code only writes in this sheet).
+ *   4. Copy the "Web app" URL (ends with /exec). Opening it in a browser
+ *      shows "Clients sheet: ready."
  *   5. In Vercel -> the project -> Settings -> Environment Variables, add:
  *        COVER_SHEET_URL     = the URL from step 4
  *        COVER_SHEET_SECRET  = the same word as SECRET below
  *      Then redeploy the site.
+ *   6. To let colleagues open the table: Share (top right of the sheet) ->
+ *      add their Gmail addresses (Viewer, or Editor to correct lines).
+ *      Covers from every computer are written here either way.
  *
  * Changing this code later: Deploy -> Manage deployments -> edit (pencil) ->
  * Version: New version -> Deploy. The URL stays the same.
@@ -44,17 +50,22 @@ function doPost(e) {
   let body;
   try {
     body = JSON.parse(e.postData.contents);
+    if (!body || typeof body !== "object") throw new Error("not an object");
   } catch (err) {
     return reply_({ ok: false, error: "bad request" });
   }
-  if (SECRET === "CHANGE-ME" || body.secret !== SECRET) {
+  if (SECRET === "CHANGE-ME") {
+    return reply_({ ok: false, error: "SECRET in the Apps Script is still CHANGE-ME: set your own word there and in COVER_SHEET_SECRET, then deploy a new version" });
+  }
+  if (body.secret !== SECRET) {
     return reply_({ ok: false, error: "wrong secret (SECRET in the Apps Script and COVER_SHEET_SECRET in Vercel must be the same word)" });
   }
 
   // two covers made at the same second on two computers: one after the other
+  // (shorter than the server's 20 s wait, so a busy sheet is reported as busy)
   const lock = LockService.getScriptLock();
   try {
-    lock.waitLock(25000);
+    lock.waitLock(10000);
   } catch (err) {
     return reply_({ ok: false, error: "the sheet is busy, try again" });
   }
@@ -63,21 +74,27 @@ function doPost(e) {
     // B..J — everything except "Date added"
     const values = [
       text_(body.client), text_(body.belongs_to), text_(body.line), text_(body.bl),
-      text_(body.containers), body.packages, body.weight, text_(body.goods), text_(body.depot),
-    ].map(function (v) { return v === undefined || v === null ? "" : v; });
+      text_(body.containers), number_(body.packages), number_(body.weight), text_(body.goods), text_(body.depot),
+    ];
     const formats = values.map(function (v) {
       if (typeof v !== "number") return "@";       // kept exactly as sent (a BL of digits stays text)
       return Number.isInteger(v) ? "#,##0" : "#,##0.###";
     });
 
     let at = findBl_(sheet, body.bl);
-    let action = "updated";
-    if (!at) {
+    const action = at ? "updated" : "added";
+    if (at) {
+      // same BL printed again: update the line, "Date added" stays the first one
+      sheet.getRange(at, 2, 1, values.length).setNumberFormats([formats]).setValues([values]);
+    } else {
       at = sheet.getLastRow() + 1;
-      action = "added";
-      sheet.getRange(at, 1).setNumberFormat("dd/MM/yyyy HH:mm").setValue(new Date());
+      // a new sheet has 1000 rows: add room when the table reaches the end
+      if (at > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 500);
+      // the whole line in one write: a failed write leaves no half line
+      sheet.getRange(at, 1, 1, values.length + 1)
+        .setNumberFormats([["dd/MM/yyyy HH:mm"].concat(formats)])
+        .setValues([[new Date()].concat(values)]);
     }
-    sheet.getRange(at, 2, 1, values.length).setNumberFormats([formats]).setValues([values]);
     SpreadsheetApp.flush();
     return reply_({ ok: true, action: action, row: at });
   } catch (err) {
@@ -127,6 +144,11 @@ function blKey_(v) {
 function text_(v) {
   const s = v === undefined || v === null ? "" : String(v);
   return s.charAt(0) === "=" ? "'" + s : s;
+}
+
+/** Packages / weight: a number stays a number (sums work), anything else is text. */
+function number_(v) {
+  return typeof v === "number" && isFinite(v) ? v : text_(v);
 }
 
 function reply_(obj) {

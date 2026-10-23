@@ -66,6 +66,18 @@ then add in Vercel:
 | `COVER_SHEET_URL` | the web app link (ends with `/exec`) — without it covers work as before, nothing is sent |
 | `COVER_SHEET_SECRET` | the same word as `SECRET` in `Code.gs` |
 
+Under the Folder cover, **Papers** and **Stamps** (same code) write down every
+ENDI, Autorisation or other paper, and every client stamp (Cachet), that
+someone takes or gives back: one line per movement (Date & time · Client ·
+Document · Person · أخذ / أرجع) in the same Google Sheet, "Documents" and
+"Stamps" tables. Each section shows what is still out (the latest movement of
+that client + document is أخذ) and the last 20 movements; "أرجع" on a line
+still out fills the form. Routes `GET/POST /api/papers/{documents|stamps}`
+(`frontend/api/cover_sheet.py`). It needs `Code.gs` version 2: until the
+script in the sheet is replaced by it (steps at the top of `Code.gs`), the
+sections say "Not ready yet" and nothing is written — a version 1 script
+refuses these requests, it never writes them as client lines.
+
 A fourth page, **Visit day** (`#/visit-day`), is the office's shared list of
 customs visit days, saved on the server in Upstash Redis
 (`frontend/api/visit_days.py`, routes `/api/visits/...`): no visit date yet /

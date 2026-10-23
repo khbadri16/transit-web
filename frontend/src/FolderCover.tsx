@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ClipboardCopy, FileDown, FolderOpen, KeyRound, Loader2, Lock, Plus, Trash2, X } from "lucide-react";
 import { SIZES, SIZE_ACTIVE, SIZE_STYLES, marqueFor, type Size } from "./containerSizes";
+import { useCoverCode } from "./coverCode";
 
 /* ==========================================================================
  * Folder cover — one A4 page glued on the front of the client's folder.
@@ -13,23 +14,7 @@ import { SIZES, SIZE_ACTIVE, SIZE_STYLES, marqueFor, type Size } from "./contain
 const API_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
 
 /* Personal section: locked by a code (COVER_CODE in Vercel, checked by the
-   server). Typed once, remembered on this PC until Lock. */
-const COVER_CODE_KEY = "cover_code_v1";
-const readCode = () => {
-  try {
-    return localStorage.getItem(COVER_CODE_KEY) || "";
-  } catch {
-    return "";
-  }
-};
-const saveCode = (v: string) => {
-  try {
-    if (v) localStorage.setItem(COVER_CODE_KEY, v);
-    else localStorage.removeItem(COVER_CODE_KEY);
-  } catch {
-    /* private window: the code lives for this visit only */
-  }
-};
+   server) — the same code as Papers and Stamps (see coverCode.ts). */
 
 const LINES = ["HMM", "CMA CGM", "MSC", "MAERSK", "AKKON", "WHITE LINE", "COSCO", "ARKAS"] as const;
 const OTHER = "OTHER";
@@ -139,13 +124,12 @@ export default function FolderCover({ source }: { source: CoverSource }) {
     noteTimer.current = text ? window.setTimeout(() => setNote(""), ms) : undefined;
   };
   useEffect(() => () => window.clearTimeout(noteTimer.current), []);
-  const [code, setCode] = useState(readCode);
+  const [code, setCode] = useCoverCode();
   const [codeInput, setCodeInput] = useState("");
   const [unlockError, setUnlockError] = useState("");
   const [unlocking, setUnlocking] = useState(false);
 
   const lock = (message = "") => {
-    saveCode("");
     setCode("");
     setUnlockError(message);
   };
@@ -165,7 +149,6 @@ export default function FolderCover({ source }: { source: CoverSource }) {
         const data = await res.json().catch(() => ({}));
         throw new Error(typeof data?.detail === "string" ? data.detail : `Server error (HTTP ${res.status})`);
       }
-      saveCode(typed);
       setCode(typed);
       setCodeInput("");
     } catch (err) {

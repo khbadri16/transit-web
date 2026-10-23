@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ArabicKeyboard } from "./ArabicKeyboard";
 import { DcpClientBook, rememberDcpClient } from "./DcpClientBook";
 import FolderCover from "./FolderCover";
+import PaperTracker from "./PaperTracker";
 import { SIZE_ACTIVE, SIZE_STYLES, marqueFor, type Size } from "./containerSizes";
 import {
   AlertTriangle,
@@ -2865,6 +2866,10 @@ function App() {
                 packages: form.facture.ligne.nbrs,
               }}
             />
+
+            {/* ── Papers & stamps taken / given back (same code as the cover) ── */}
+            <PaperTracker table="documents" />
+            <PaperTracker table="stamps" />
 
             {/* Footer — copyright + report a bug (far bottom) */}
             <footer className="mt-auto pt-8 flex flex-col-reverse sm:flex-row items-center justify-between gap-3 border-t border-slate-800/60">

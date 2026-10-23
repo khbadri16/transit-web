@@ -16,6 +16,8 @@ Routes are prefixed with /api because Vercel rewrites /api/* to this file
     POST /api/folder-cover -> folder cover page (PDF) — api/folder_cover_pdf.py;
                            also adds the client's line to the Google Sheet
                            (api/cover_sheet.py)
+    GET/POST /api/papers/{documents|stamps} -> papers & stamps taken / given
+                           back, in the same Google Sheet (api/cover_sheet.py)
     POST /api/classify-tariff, /api/classify-products -> HS codes with Gemini
                            or Claude (provider field) — api/tariff_core.py
 
@@ -1206,6 +1208,44 @@ def folder_cover(req: FolderCoverIn, request: Request, x_cover_code: str = Heade
         # percent-encoded: a header must be ASCII, the reason can be French/Arabic
         headers["X-Cover-Sheet-Error"] = urllib.parse.quote(reason, safe=" ():,.'=/-")
     return StreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
+
+
+# --------------------------------------------------------------------------
+# Papers & stamps — who took / gave back an ENDI, an Autorisation, a client's
+# stamp... Written in the clients Google Sheet ("Documents" / "Stamps" tables,
+# Code.gs version 2), behind the same code as the Folder cover.
+# --------------------------------------------------------------------------
+
+
+class PaperIn(BaseModel):
+    client: str = ""
+    document: str = ""      # documents only: "ENDI" | "Autorisation" | any other name
+    person: str = ""
+    movement: str = ""      # "took" (أخذ) | "returned" (أرجع)
+
+
+PaperTable = Literal["documents", "stamps"]
+
+
+@app.get("/api/papers/{table}")
+def papers_list(table: PaperTable, request: Request, x_cover_code: str = Header("")):
+    """What is still out + the last movements (ready False: the sheet can't take papers yet)."""
+    _check_cover_code(x_cover_code, request)
+    return _cs().papers(table)
+
+
+@app.post("/api/papers/{table}")
+def papers_add(table: PaperTable, req: PaperIn, request: Request, x_cover_code: str = Header("")):
+    _check_cover_code(x_cover_code, request)
+    cs = _cs()
+    try:
+        entry = cs.paper_entry(table, req.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result = cs.papers(table, entry)
+    if not result["ready"] or result["error"]:
+        raise HTTPException(status_code=503, detail=result["error"])
+    return result
 
 
 @app.get("/api/folder-cover/logos")

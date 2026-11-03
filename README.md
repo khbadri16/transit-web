@@ -30,7 +30,12 @@ A third page, **Tracking** (`#/tracking`), keeps the list of BLs being
 followed (saved in the browser; Export / Import moves it between computers).
 AKKON BLs are checked automatically by the server (`POST /api/tracking/akkon`,
 `frontend/api/akkon_tracking.py`, which posts Akkon's public tracking form and
-reads its result table). MSC, MAERSK and COSCO open their own tracking page
+reads its result table). Their arrival date is Akkon's **Final ETA** (arrival at
+the final port): Akkon's ETA column is only the port of discharge — on a
+transhipment, the port where the container changes ship — so while the Final
+ETA is empty the BL shows "Waiting for final ETA" (with that port's ETA beside
+it). Lists saved before this rule are corrected when the page opens, and
+"Check Akkon" refreshes every Akkon BL that is not Done. MSC, MAERSK and COSCO open their own tracking page
 with the BL already searched; CMA CGM and HMM open with the BL copied, and the
 "⚡ Fill BL" bookmark fills and searches it on their page. HMM BLs also have an
 "Arrival notice" button (Noatum's notice page): you type its code, then
@@ -38,7 +43,8 @@ with the BL already searched; CMA CGM and HMM open with the BL copied, and the
 
 At the end of the Documents page, **Folder cover** prints the A4 page glued on
 the front of a client's folder (French + Arabic titles, black & white
-friendly, sizes adapt to long names and many containers, "Transit Belarbi Tayeb"
+friendly, sizes adapt to long names, long goods (up to 120 characters, never
+printed outside their box) and many containers, "Transit Belarbi Tayeb"
 at the bottom; the date, N° déclaration and taxes boxes are left empty to fill
 by hand, and the arrival date too when the form leaves it empty; optional: the name the folder belongs to — "Appartient
 à / ملك ل" — alone at the top, and a "Dépôt-SNTR" box next to the BL when the

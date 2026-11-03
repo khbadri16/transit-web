@@ -198,7 +198,7 @@ export default function FolderCover({ source }: { source: CoverSource }) {
     if (source.bl.trim()) patch.bl = source.bl.trim().toUpperCase();
     if (source.containers.length) patch.containers = source.containers.map((x) => newRow(x.number, x.size));
     if (source.weight.trim()) patch.weight = source.weight.trim();
-    if (source.goods.trim()) patch.goods = source.goods.trim();
+    if (source.goods.trim()) patch.goods = source.goods.trim().slice(0, 120); // the cover prints up to 120
     if (source.packages.trim()) patch.packages = source.packages.trim();
     setC((prev) => ({ ...prev, ...patch }));
     const n = Object.keys(patch).length;
@@ -538,7 +538,7 @@ export default function FolderCover({ source }: { source: CoverSource }) {
               </label>
               <label className="flex flex-col gap-1.5 col-span-2 md:col-span-1">
                 {label("Goods", "السلعة")}
-                <input className="input" dir="auto" list="cover-goods" value={c.goods} onChange={(e) => set("goods", e.target.value)} placeholder="e.g. Vêtements" />
+                <input className="input" dir="auto" list="cover-goods" maxLength={120} value={c.goods} onChange={(e) => set("goods", e.target.value)} placeholder="e.g. Vêtements" />
                 <datalist id="cover-goods">
                   {GOODS.map((g) => (
                     <option key={g} value={g} />

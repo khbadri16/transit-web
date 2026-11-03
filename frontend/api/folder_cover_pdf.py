@@ -9,11 +9,12 @@ Containers are grouped by size, one line per size in the Mise à Quai style:
 typed (no space added).
 
 The page adapts to its content: a long client name goes to 2-3 lines and
-shrinks, many containers go in 4-5 columns, and when everything together is
-too tall the whole page is scaled down a little until the pen boxes at the
-bottom (Date / N° Déclaration / Taxes) still fit. The arrival box at the top
-always shows: with the date typed in the form, or empty with a line for the
-pen when the form leaves it empty.
+shrinks, many containers go in 4-5 columns, a long Goods text gets a wider
+tile and more, smaller lines (no text is ever printed outside its box), and
+when everything together is too tall the whole page is scaled down a little
+until the pen boxes at the bottom (Date / N° Déclaration / Taxes) still fit.
+The arrival box at the top always shows: with the date typed in the form, or
+empty with a line for the pen when the form leaves it empty.
 
 Optional: the name of the person the folder belongs to ("Appartient à / ملك ل"
 in the form) is printed alone in a thin box at the very top, and when the
@@ -54,6 +55,7 @@ PEN_H = 38.0                  # pen boxes at the bottom
 FOOTER_H = 9.0                # office name under a thin line, very bottom
 OFFICE = "Transit Belarbi Tayeb"
 PT = 0.3528                   # 1 pt in mm
+GOODS_MAX = 120               # characters of Goods printed (same limit in the form)
 
 # Known lines -> name printed on the cover (the user can type any other)
 LINES = {
@@ -69,6 +71,7 @@ LINES = {
 }
 
 _AR_RE = re.compile("[֐-ࣿﭐ-﷿ﹰ-﻿]")
+_BREAK_AFTER = re.compile(r"[^/\-,.+]*[/\-,.+]+|[^/\-,.+]+")   # "ABC/" "DEF-" "GHI"
 _reshaper = arabic_reshaper.ArabicReshaper({"delete_harakat": False})
 
 
@@ -89,7 +92,7 @@ def vis(s: str) -> str:
 
 
 def clean(s, limit: int = 200) -> str:
-    return re.sub(r"\s+", " ", str(s or "")).strip()[:limit]
+    return re.sub(r"\s+", " ", str(s or "")).strip()[:limit].strip()
 
 
 def slug(name: str) -> str:
@@ -241,17 +244,69 @@ class _Pdf(FPDF):
             size -= 0.5
         return size
 
-    def wrap(self, text: str, w: float, size: float, bold=True) -> List[str]:
-        words, lines, cur = text.split(" "), [], ""
-        for word in words:
-            trial = f"{cur} {word}".strip()
-            if cur and self.width(trial, size, bold) > w:
-                lines.append(cur)
-                cur = word
+    def _pack(self, parts: List[str], w: float, size: float, bold=True) -> List[str]:
+        """Join parts with no space while the line still fits in w."""
+        out, cur = [], ""
+        for part in parts:
+            if cur and self.width(cur + part, size, bold) > w:
+                out.append(cur)
+                cur = part
             else:
-                cur = trial
+                cur += part
+        return out + [cur]
+
+    def split_word(self, word: str, w: float, size: float, bold=True) -> List[str]:
+        """A word wider than the box (no space to wrap at) is cut into pieces
+        that fit: after a / - , . + when it can ("ÉLECTROMÉNAGER/" then
+        "ÉLECTRONIQUE"), else between two letters."""
+        if self.width(word, size, bold) <= w:
+            return [word]
+        chunks: List[str] = []
+        for part in _BREAK_AFTER.findall(word):
+            chunks += self._pack(list(part), w, size, bold)   # a part still too wide: cut anywhere
+        return self._pack(chunks, w, size, bold)
+
+    def wrap(self, text: str, w: float, size: float, bold=True, break_words=False) -> List[str]:
+        lines, cur = [], ""
+        for word in text.split(" "):
+            pieces = self.split_word(word, w, size, bold) if break_words else [word]
+            for j, piece in enumerate(pieces):
+                trial = f"{cur} {piece}".strip()
+                # the rest of a cut word always starts a new line
+                if cur and (j > 0 or self.width(trial, size, bold) > w):
+                    lines.append(cur)
+                    cur = piece
+                else:
+                    cur = trial
         lines.append(cur)
         return lines
+
+    def fits(self, text: str, w: float, size: float, max_lines: int, bold=True) -> bool:
+        lines = self.wrap(text, w, size, bold)
+        return len(lines) <= max_lines and all(self.width(l, size, bold) <= w for l in lines)
+
+    def fit_box(self, text: str, w: float, size: float, min_size: float, max_lines: int,
+                max_h: Optional[float] = None, bold=True) -> Tuple[List[str], float]:
+        """Biggest size where the text fits in max_lines lines of width w (and,
+        with max_h, in that height, mm), and nothing ever goes outside the box:
+        a word too long for it is cut, and when even the smallest size needs
+        more lines, the end becomes "…"."""
+        s = size
+        while True:
+            lines = self.wrap(text, w, s, bold, break_words=True)
+            if len(lines) <= max_lines and (max_h is None or len(lines) * s * PT * 1.18 <= max_h):
+                return lines, s
+            if s <= min_size:
+                break
+            s = max(min_size, s - 0.5)
+        if len(lines) <= max_lines:   # only taller than wished: the tile grows
+            return lines, s
+        lines = lines[:max_lines]
+        last = lines[-1]
+        while last and self.width(last + "…", s, bold) > w:
+            last = last[:-1].rstrip()
+        lines[-1] = last + "…"
+        return lines, s
 
     def fit_lines(self, text: str, w: float, size: float, min_size: float, max_lines: int,
                   bold=True) -> Tuple[List[str], float]:
@@ -425,28 +480,43 @@ def _render(pdf: _Pdf, d: Dict, s: float, extra: float = 0.0) -> float:
     y += c_h + 7 * s + extra
 
     # ---- colis / poids / marchandise ---------------------------------------------
+    # Three tiles of the same width. A Goods text too long for 2 big lines gets
+    # a wider tile (Colis and Poids keep just the room their label and value
+    # need) and more, smaller lines — at most about the height of two big
+    # lines. No text is ever printed outside its tile.
     gap = 5
-    tw = (INNER - 2 * gap) / 3
+    span = INNER - 2 * gap
     tiles = [
         ("Colis", "عدد الطرود", d["packages"]),
         ("Poids", "الوزن", f"{d['weight']} kg" if d["weight"] else ""),
         ("Marchandise", "السلعة", d["goods"]),
     ]
+    widths = [span / 3] * 3
+    long_goods = bool(d["goods"]) and not pdf.fits(d["goods"], span / 3 - 8, 14 * s, 2)
+    if long_goods:
+        def need(fr: str, ar_: str, val: str) -> float:
+            label_w = pdf.width(fr, lab) + pdf.width(ar_, lab) + 6
+            value_w = pdf.width(val, 24 * s) + 0.5 if val else 0.0
+            return min(span / 3, max(36.0, label_w, value_w) + 8)
+        widths[0], widths[1] = need(*tiles[0]), need(*tiles[1])
+        widths[2] = span - widths[0] - widths[1]
     layouts = []
-    for fr, ar_, val in tiles:
+    for i, ((fr, ar_, val), tw) in enumerate(zip(tiles, widths)):
         if not val:
             layouts.append(([], 0))
-            continue
-        ls, sz = pdf.fit_lines(val, tw - 8, 24 * s, 11 * s, 2)
-        layouts.append((ls, sz))
+        elif i == 2 and long_goods:
+            layouts.append(pdf.fit_box(val, tw - 8, 24 * s, 7 * s, 6, max_h=24 * s))
+        else:
+            layouts.append(pdf.fit_box(val, tw - 8, 24 * s, 9 * s, 2))
     body = max([len(ls) * sz * PT * 1.18 for ls, sz in layouts] + [24 * s * PT * 1.18])
     t_h = max(34 * s, 3 * s + lab_h + 4 * s + body + 4 * s)
-    for i, ((fr, ar_, _), (ls, sz)) in enumerate(zip(tiles, layouts)):
-        x = M + i * (tw + gap)
+    x = M
+    for (fr, ar_, _), (ls, sz), tw in zip(tiles, layouts, widths):
         pdf.box(x, y, tw, t_h)
         pdf.label(x + 4, y + 3 * s, tw - 8, fr, ar_, lab)
         if ls:
             pdf.lines_at(x + 4, y + 3 * s + lab_h + 4 * s, tw - 8, ls, sz)
+        x += tw + gap
     y += t_h
     return y
 
@@ -490,7 +560,7 @@ def normalize(data: Dict) -> Dict:
         "containers": group_containers(data.get("containers")),
         "packages": fmt_int(data.get("packages", "")),
         "weight": fmt_int(data.get("weight", "")),
-        "goods": clean(data.get("goods"), 80),
+        "goods": clean(data.get("goods"), GOODS_MAX),
         "eta": fmt_date_fr(data.get("eta", "")),
         "depot": depot if is_ar(depot) else depot.upper(),
         "belongs_to": clean(data.get("belongs_to"), 60),

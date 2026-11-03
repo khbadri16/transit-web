@@ -359,7 +359,10 @@ function saveShipments(list: Shipment[]) {
  *                Empty while the container waits for its next ship.
  * So the arrival date is the Final ETA, never the ETA of a transhipment port.
  * The ETA is used only when Akkon shows that the port of discharge IS the
- * final destination (no transhipment). A BL arrives with its last container. */
+ * final destination (no transhipment). A BL arrives with its last container.
+ * Real example (AKKNSA26045668, Nov 2026): NANSHA -> DERINCE ETA 23/10/2026,
+ * Final Destination ANNABA, Final ETA empty: waiting at Derince. Until the
+ * next ship is known, Akkon repeats the first ship as Transhipment Vessel. */
 
 /** "ANNABA" / "Annaba, Algeria" / "ANNABA PORT" -> the same port ("BAR" and "BARCELONA" are not). */
 const samePort = (a = "", b = "") => {
@@ -372,10 +375,17 @@ const samePort = (a = "", b = "") => {
 /** Akkon date -> dd/mm/yyyy (kept as given when it is not a date). */
 const akkonDate = (v?: string) => (v ? noticeDate(v) || v : "");
 
+/** The ship of the next leg, "" while unknown — the first ship repeated in
+ *  the Transhipment Vessel column is not a next ship. */
+const nextShip = (r: AkkonRow) => {
+  const same = (a?: string, b?: string) => (a || "").trim().toUpperCase() === (b || "").trim().toUpperCase();
+  return r.ts_vessel && !(same(r.ts_vessel, r.vessel) && same(r.ts_voyage, r.voyage)) ? r.ts_vessel : "";
+};
+
 /** One container's arrival at its final port, "" while Akkon doesn't know it. */
 function akkonFinalEta(r: AkkonRow): string {
   if (r.final_eta) return akkonDate(r.final_eta);
-  const direct = !r.ts_vessel && !!r.final_destination && samePort(r.final_destination, r.pod);
+  const direct = !nextShip(r) && !!r.final_destination && samePort(r.final_destination, r.pod);
   return direct ? akkonDate(r.eta) : "";
 }
 
@@ -406,11 +416,11 @@ function akkonSummary(rows?: AkkonRow[]): AkkonSummary | null {
   if (k < 0) k = finals.reduce((best, f, i) => (time(f) > time(finals[best]) ? i : best), 0);
   const r = rows[k];
   const waiting = finals.filter((f) => !f).length;
-  const transhipment = !!r.ts_vessel || (!!r.final_destination && !samePort(r.final_destination, r.pod));
+  const transhipment = !!nextShip(r) || (!!r.final_destination && !samePort(r.final_destination, r.pod));
   return {
     eta: waiting ? "" : finals[k],
     destination: r.final_destination || r.pod || "",
-    vessel: r.ts_vessel || r.vessel || "",
+    vessel: nextShip(r) || r.vessel || "",
     via: transhipment ? r.pod || "" : "",
     pod: r.pod || "",
     podEta: akkonDate(r.eta),
@@ -1203,9 +1213,9 @@ function ShipmentCard({
                     <th>ETS</th>
                     <th>Discharge</th>
                     <th title="Arrival at the port of discharge — on a transhipment, only where the container changes ship">ETA</th>
-                    <th>Transhipment</th>
                     <th>Final dest.</th>
                     <th title="Arrival at the final destination — the date used for this BL">Final ETA</th>
+                    <th>Transhipment</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1217,9 +1227,9 @@ function ShipmentCard({
                       <td>{r.ets}</td>
                       <td>{r.pod}</td>
                       <td>{r.eta}</td>
-                      <td>{[r.ts_vessel, r.ts_voyage].filter(Boolean).join(" · ")}</td>
                       <td>{r.final_destination}</td>
-                      <td className="font-semibold text-white">{r.final_eta}</td>
+                      <td className="font-semibold text-white">{r.final_eta || <span className="font-normal text-slate-500">—</span>}</td>
+                      <td>{[r.ts_vessel, r.ts_voyage].filter(Boolean).join(" · ")}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -18,7 +18,8 @@ The answer is the page's "GridView1" table — one row per container:
 ETA is the arrival at the Port Of Discharge — on a transhipment, only the port
 where the container changes ship. Final ETA is the arrival at the Final
 Destination, empty until the next ship is known: it is the arrival date the
-Tracking page uses (src/Tracking.tsx, akkonSummary). Rows are sent as read.
+Tracking page uses (src/Tracking.tsx, akkonSummary). Until then Akkon repeats
+the first ship in Transhipment Vessel / Voyage. Rows are sent as read.
 """
 
 import re

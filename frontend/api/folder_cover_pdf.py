@@ -10,11 +10,12 @@ typed (no space added).
 
 The page adapts to its content: a long client name goes to 2-3 lines and
 shrinks, many containers go in 4-5 columns, a long Goods text gets a wider
-tile and more, smaller lines (no text is ever printed outside its box), and
-when everything together is too tall the whole page is scaled down a little
-until the pen boxes at the bottom (Date / N° Déclaration / Taxes) still fit.
-The arrival box at the top always shows: with the date typed in the form, or
-empty with a line for the pen when the form leaves it empty.
+tile and more, smaller lines (a word is never cut, and no text is ever printed
+outside its box — a word too wide makes the text smaller), and when everything
+together is too tall the whole page is scaled down a little until the pen
+boxes at the bottom (Date / N° Déclaration / Taxes) still fit. The arrival box
+at the top always shows: with the date typed in the form, or empty with a line
+for the pen when the form leaves it empty.
 
 Optional: the name of the person the folder belongs to ("Appartient à / ملك ل"
 in the form) is printed alone in a thin box at the very top, and when the
@@ -71,7 +72,7 @@ LINES = {
 }
 
 _AR_RE = re.compile("[֐-ࣿﭐ-﷿ﹰ-﻿]")
-_BREAK_AFTER = re.compile(r"[^/\-,.+]*[/\-,.+]+|[^/\-,.+]+")   # "ABC/" "DEF-" "GHI"
+_AFTER_SIGN = re.compile(r"[^/,;+]*[/,;+]+|[^/,;+]+")   # "TISSUS/" "COTON," "LIN"
 _reshaper = arabic_reshaper.ArabicReshaper({"delete_harakat": False})
 
 
@@ -244,68 +245,48 @@ class _Pdf(FPDF):
             size -= 0.5
         return size
 
-    def _pack(self, parts: List[str], w: float, size: float, bold=True) -> List[str]:
-        """Join parts with no space while the line still fits in w."""
-        out, cur = [], ""
-        for part in parts:
-            if cur and self.width(cur + part, size, bold) > w:
-                out.append(cur)
-                cur = part
-            else:
-                cur += part
-        return out + [cur]
-
-    def split_word(self, word: str, w: float, size: float, bold=True) -> List[str]:
-        """A word wider than the box (no space to wrap at) is cut into pieces
-        that fit: after a / - , . + when it can ("ÉLECTROMÉNAGER/" then
-        "ÉLECTRONIQUE"), else between two letters."""
-        if self.width(word, size, bold) <= w:
-            return [word]
-        chunks: List[str] = []
-        for part in _BREAK_AFTER.findall(word):
-            chunks += self._pack(list(part), w, size, bold)   # a part still too wide: cut anywhere
-        return self._pack(chunks, w, size, bold)
-
-    def wrap(self, text: str, w: float, size: float, bold=True, break_words=False) -> List[str]:
+    def wrap(self, text: str, w: float, size: float, bold=True, signs=False) -> List[str]:
+        """Cut the text into lines of width w at its spaces — with signs=True
+        also right after a / , ; + typed without a space ("TISSUS/COTON").
+        A word is NEVER cut: a word wider than w stays whole on its line."""
         lines, cur = [], ""
         for word in text.split(" "):
-            pieces = self.split_word(word, w, size, bold) if break_words else [word]
-            for j, piece in enumerate(pieces):
-                trial = f"{cur} {piece}".strip()
-                # the rest of a cut word always starts a new line
-                if cur and (j > 0 or self.width(trial, size, bold) > w):
+            for j, part in enumerate(_AFTER_SIGN.findall(word) if signs else [word]):
+                trial = (cur + ("" if j else " ") + part) if cur else part
+                if cur and self.width(trial, size, bold) > w:
                     lines.append(cur)
-                    cur = piece
+                    cur = part
                 else:
                     cur = trial
         lines.append(cur)
         return lines
 
     def fits(self, text: str, w: float, size: float, max_lines: int, bold=True) -> bool:
-        lines = self.wrap(text, w, size, bold)
+        lines = self.wrap(text, w, size, bold, signs=True)
         return len(lines) <= max_lines and all(self.width(l, size, bold) <= w for l in lines)
 
     def fit_box(self, text: str, w: float, size: float, min_size: float, max_lines: int,
                 max_h: Optional[float] = None, bold=True) -> Tuple[List[str], float]:
         """Biggest size where the text fits in max_lines lines of width w (and,
-        with max_h, in that height, mm), and nothing ever goes outside the box:
-        a word too long for it is cut, and when even the smallest size needs
-        more lines, the end becomes "…"."""
+        with max_h, in that height, mm). Two rules always hold: a word is never
+        cut (lines break at spaces, or after / , ; +) and nothing is printed
+        outside the box — a text still too long at min_size is printed smaller
+        until its longest word fits."""
+        def lay(sz: float) -> Tuple[List[str], bool]:
+            lines = self.wrap(text, w, sz, bold, signs=True)
+            return lines, len(lines) <= max_lines and all(self.width(l, sz, bold) <= w for l in lines)
+
         s = size
-        while True:
-            lines = self.wrap(text, w, s, bold, break_words=True)
-            if len(lines) <= max_lines and (max_h is None or len(lines) * s * PT * 1.18 <= max_h):
+        while s >= min_size:
+            lines, ok = lay(s)
+            if ok and (max_h is None or len(lines) * s * PT * 1.18 <= max_h):
                 return lines, s
-            if s <= min_size:
-                break
-            s = max(min_size, s - 0.5)
-        if len(lines) <= max_lines:   # only taller than wished: the tile grows
-            return lines, s
-        lines = lines[:max_lines]
-        last = lines[-1]
-        while last and self.width(last + "…", s, bold) > w:
-            last = last[:-1].rstrip()
-        lines[-1] = last + "…"
+            s -= 0.5
+        s = min_size                  # still too long: a taller tile, then smaller letters
+        lines, ok = lay(s)
+        while not ok and s > 0.5:
+            s -= 0.25
+            lines, ok = lay(s)
         return lines, s
 
     def fit_lines(self, text: str, w: float, size: float, min_size: float, max_lines: int,
@@ -483,7 +464,7 @@ def _render(pdf: _Pdf, d: Dict, s: float, extra: float = 0.0) -> float:
     # Three tiles of the same width. A Goods text too long for 2 big lines gets
     # a wider tile (Colis and Poids keep just the room their label and value
     # need) and more, smaller lines — at most about the height of two big
-    # lines. No text is ever printed outside its tile.
+    # lines. A word is never cut and no text is ever printed outside its tile.
     gap = 5
     span = INNER - 2 * gap
     tiles = [

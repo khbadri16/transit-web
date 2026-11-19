@@ -58,6 +58,11 @@ type GeneratePayload = {
   bl_number: string; // AKKON only — printed on every AKKON Mise à Quai
   marchandise_type: string;
   weight_of_all_containers: string;
+  /* Optional — known once the ship has arrived. Empty = the blank on the
+     Bon / Lettre stays, to be written by hand. */
+  navire: string; // ship's name — Bon + Lettre
+  gros: string; // gros number — Bon + Lettre
+  article: string; // article number — Bon only (the Lettre has no Article line)
   force_uppercase: boolean;
   containers: { number: string; size: Size }[];
   /* Which transit documents to generate */
@@ -568,6 +573,9 @@ type FormState = {
   bl_number: string; // shown + used only when the resolved company is AKKON
   marchandise_type: string;
   weight_of_all_containers: string;
+  navire: string; // optional (ship arrival)
+  gros: string; // optional (ship arrival)
+  article: string; // optional (ship arrival)
   force_uppercase: boolean;
   containers: Container[];
   doc_mise: boolean;
@@ -591,6 +599,9 @@ const initialForm: FormState = {
   bl_number: "",
   marchandise_type: "",
   weight_of_all_containers: "",
+  navire: "",
+  gros: "",
+  article: "",
   force_uppercase: true,
   containers: [],
   /* Default: only the single merged Word file; the separate files are opt-in. */
@@ -1301,6 +1312,9 @@ function App() {
       bl_number: p.bl_number ?? "",
       marchandise_type: p.marchandise_type ?? "",
       weight_of_all_containers: p.weight_of_all_containers ?? "",
+      navire: p.navire ?? "",
+      gros: p.gros ?? "",
+      article: p.article ?? "",
       force_uppercase: p.force_uppercase ?? true,
       containers: (p.containers ?? []).map((c) => ({
         id: crypto.randomUUID(),
@@ -1367,6 +1381,9 @@ function App() {
       bl_number: companyName === "AKKON" ? form.bl_number.trim() : "",
       marchandise_type: form.marchandise_type.trim(),
       weight_of_all_containers: form.weight_of_all_containers.trim(),
+      navire: form.navire.trim(),
+      gros: form.gros.trim(),
+      article: form.article.trim(),
       force_uppercase: form.force_uppercase,
       containers: form.containers.map((c) => ({
         number: c.number.trim(),
@@ -1585,6 +1602,61 @@ function App() {
                       <span className="unit-suffix">Kgs</span>
                     </div>
                   </Field>
+                </div>
+
+                {/* Ship arrival — optional, known only once the ship is in:
+                    typed, they are printed in the blanks of the Bon / Lettre;
+                    empty, the blanks stay to be written by hand. */}
+                <div className="mt-5 pt-4 border-t border-slate-800">
+                  <p className="text-sm font-medium text-slate-300">
+                    Ship arrival
+                    <span className="text-xs text-slate-500 font-normal">
+                      {" "}— optional, printed on the Bon de Commande and the Lettre
+                      d'Engagement. Left empty, the space stays blank to write by hand.
+                    </span>
+                  </p>
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-[2fr_1fr_1fr] gap-4">
+                    <Field label="Navire (ship name)">
+                      <input
+                        className="input"
+                        type="text"
+                        name="navire"
+                        value={form.navire}
+                        onChange={handleInputChange}
+                        placeholder="e.g. MSC ROSARIA"
+                        maxLength={40}
+                        style={upper}
+                      />
+                    </Field>
+                    <Field label="Gros N°">
+                      <input
+                        className="input"
+                        type="text"
+                        name="gros"
+                        value={form.gros}
+                        onChange={handleInputChange}
+                        placeholder="e.g. 1234"
+                        maxLength={20}
+                        style={upper}
+                      />
+                    </Field>
+                    <Field label="Article N°">
+                      <input
+                        className="input"
+                        type="text"
+                        name="article"
+                        value={form.article}
+                        onChange={handleInputChange}
+                        placeholder="e.g. 56"
+                        maxLength={20}
+                        style={upper}
+                      />
+                      {/* the Lettre has no ARTICLE line */}
+                      <span className="text-[11px] text-slate-500">
+                        Bon de Commande only
+                      </span>
+                    </Field>
+                  </div>
                 </div>
 
                 {/* Force uppercase toggle */}

@@ -1080,8 +1080,12 @@ function ShipmentCard({
   return (
     <article className={`card !p-4 sm:!p-5 ${s.status === "done" ? "opacity-60" : ""}`}>
       <div className="flex flex-col lg:flex-row lg:items-center gap-3 lg:gap-5">
-        {/* BL + client */}
-        <div className="min-w-0 lg:w-[34%]">
+        {/* BL + client — 30%: room for any BL, and the ETA column keeps
+            enough width for its tag next to the status menu. When a row is
+            too tight (HMM's extra button), this column gives way first; in a
+            small window the action buttons may wrap, the ETA keeps its
+            minimum — nothing runs under the status menu. */}
+        <div className="min-w-0 lg:w-[30%] lg:min-w-[14.5rem]">
           <div className="flex items-center gap-2 flex-wrap">
             <span className={`px-2 py-0.5 rounded-md border text-[11px] font-bold tracking-wide ${def.badge}`}>{def.label}</span>
             <span className="font-mono text-[15px] font-semibold text-white tracking-wide break-all">{s.bl}</span>
@@ -1099,7 +1103,7 @@ function ShipmentCard({
         </div>
 
         {/* ETA */}
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 lg:min-w-[7.5rem]">
           <div className="flex items-center gap-2 flex-wrap">
             <CalendarClock size={15} className="text-indigo-300 shrink-0" />
             <span className="text-sm font-semibold text-slate-100 tabular-nums">{s.eta || "—"}</span>
@@ -1145,8 +1149,8 @@ function ShipmentCard({
           </p>
         </div>
 
-        {/* status + actions */}
-        <div className="flex items-center gap-2 flex-wrap lg:justify-end">
+        {/* status + actions — one row from 1280 px (the card is at full width) */}
+        <div className="flex items-center gap-2 flex-wrap lg:justify-end xl:shrink-0">
           <select
             className={`trk-status trk-status-${s.status}`}
             value={s.status}

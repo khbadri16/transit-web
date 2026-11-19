@@ -911,7 +911,9 @@ body {
   padding: 0.15rem 0.55rem;
   border-radius: 999px;
   border: 1px solid transparent;
-  white-space: nowrap;
+  /* one line whenever its column has room; in a narrow column (small window,
+     zoom) it wraps instead of running under the status menu beside it */
+  max-width: 100%;
 }
 .trk-badge-blue { color: #bfdbfe; background: rgba(59, 130, 246, 0.14); border-color: rgba(96, 165, 250, 0.35); }
 .trk-badge-amber { color: #fde68a; background: rgba(245, 158, 11, 0.14); border-color: rgba(251, 191, 36, 0.4); }

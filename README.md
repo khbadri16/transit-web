@@ -45,7 +45,10 @@ the final port): Akkon's ETA column is only the port of discharge — on a
 transhipment, the port where the container changes ship — so while the Final
 ETA is empty the BL shows "Waiting for final ETA" (with that port's ETA beside
 it). Lists saved before this rule are corrected when the page opens, and
-"Check Akkon" refreshes every Akkon BL that is not Done. MSC, MAERSK and COSCO open their own tracking page
+"Check Akkon" refreshes every Akkon BL that is not Validated. Each BL has a
+status: **In transit** → **Arrived and not validated** → **Validated** (the
+"Active" tab shows the first two; lists saved before these names keep their
+status). MSC, MAERSK and COSCO open their own tracking page
 with the BL already searched; CMA CGM and HMM open with the BL copied, and the
 "⚡ Fill BL" bookmark fills and searches it on their page. HMM BLs also have an
 "Arrival notice" button (Noatum's notice page): you type its code, then

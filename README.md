@@ -13,6 +13,16 @@ dated on the day it is generated) and the Facture de transit (toggle-gated,
 fully independent, with live TVA 9% / TAUX / TOTAL TTC calculations — always a
 standalone file, never merged).
 
+**Navire, Gros N° and Article N°** (Preparation › Global details › Ship
+arrival) are optional: they are known only once the ship has arrived. Typed,
+they are written into the blank spaces the Bon de Commande (NAVIRE, GROS,
+ARTICLE) and the Lettre d'Engagement (GROSN°, NAVIRE — it has no ARTICLE line)
+leave after these labels. Only the rendered copy is filled, the .docx templates
+are never modified. The value is measured with the papers' real font widths, so
+the rest of each line stays where it is (a value too long for its blank is
+printed smaller): `frontend/api/paper_blanks.py`. Left empty, the blanks stay
+as they are, to be written by hand.
+
 The DCP part remembers each importer's fixed lines (المستورد, رقم س ت, تاريخ
 س ت, العنوان) in the browser only (`src/DcpClientBook.tsx`): pick a saved
 client to fill them; they are saved / updated automatically on generate, and
@@ -35,7 +45,10 @@ the final port): Akkon's ETA column is only the port of discharge — on a
 transhipment, the port where the container changes ship — so while the Final
 ETA is empty the BL shows "Waiting for final ETA" (with that port's ETA beside
 it). Lists saved before this rule are corrected when the page opens, and
-"Check Akkon" refreshes every Akkon BL that is not Done. MSC, MAERSK and COSCO open their own tracking page
+"Check Akkon" refreshes every Akkon BL that is not Validated. Each BL has a
+status: **In transit** → **Arrived and not validated** → **Validated** (the
+"Active" tab shows the first two; lists saved before these names keep their
+status). MSC, MAERSK and COSCO open their own tracking page
 with the BL already searched; CMA CGM and HMM open with the BL copied, and the
 "⚡ Fill BL" bookmark fills and searches it on their page. HMM BLs also have an
 "Arrival notice" button (Noatum's notice page): you type its code, then

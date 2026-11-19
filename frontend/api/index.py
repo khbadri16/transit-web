@@ -58,6 +58,11 @@ TPL_ANNEXE = "ANNEXE.docx"              # rendered once (if products present)
 TPL_MANDAT = "MANDAT MSC.docx"          # rendered once (autorisation aux mandataires)
 TPL_FACTURE = "FACTURE TRANSIT.docx"    # rendered once (facture de transit)
 
+# Text font of the BON / the LETTRE: the optional Navire, Gros and Article are
+# measured with it to fit the blank spaces they go in (api/paper_blanks.py).
+FONT_BON = "Times New Roman"
+FONT_LETTRE = "Calibri"
+
 # The nine fixed libellés of the facture table, in the order they are printed.
 FACTURE_KEYS = [
     "echange", "magasinage", "dechargement", "restitution", "surestaries",
@@ -186,6 +191,11 @@ class GenerateRequest(BaseModel):
     bl_number: str = ""      # AKKON only — printed on every AKKON MISE A QUAI
     marchandise_type: str = ""
     weight_of_all_containers: str = ""
+    # Optional — known once the ship has arrived. Typed, they are written in
+    # the blank spaces of the BON / LETTRE; empty, the blanks stay for the pen.
+    navire: str = ""         # ship's name — BON + LETTRE
+    gros: str = ""           # gros number — BON + LETTRE
+    article: str = ""        # article number — BON only (no ARTICLE line in the LETTRE)
     force_uppercase: bool = True
     containers: List[Container] = Field(default_factory=list)
     # Which transit documents to generate (checkboxes in the UI)
@@ -311,8 +321,22 @@ def build_facture_context(f: "Facture") -> dict:
     return ctx
 
 
-def render_to_bytes(template_name: str, context: dict) -> bytes:
-    """Render one template entirely in memory and return the .docx bytes."""
+def _paper_blanks():
+    """api/paper_blanks.py, imported like the other helper modules."""
+    try:
+        from api import paper_blanks
+    except ImportError:  # loaded outside the package context
+        import sys
+        if str(BASE_DIR) not in sys.path:
+            sys.path.append(str(BASE_DIR))
+        import paper_blanks
+    return paper_blanks
+
+
+def render_to_bytes(template_name: str, context: dict, blanks=()) -> bytes:
+    """Render one template entirely in memory and return the .docx bytes.
+    `blanks` (paper_blanks.Blank): values written into the paper's blank
+    spaces after rendering — the template file itself is never modified."""
     tpl_path = TEMPLATE_DIR / template_name
     if not tpl_path.exists():
         raise HTTPException(
@@ -321,6 +345,10 @@ def render_to_bytes(template_name: str, context: dict) -> bytes:
         )
     doc = DocxTemplate(str(tpl_path))
     doc.render(context)
+    if blanks:
+        missing = _paper_blanks().fill_blanks(doc.docx, blanks)
+        if missing:  # the template no longer prints that label
+            print(f"{template_name}: no blank found after {missing}")
     out = io.BytesIO()
     doc.save(out)
     return out.getvalue()
@@ -618,6 +646,9 @@ def generate(req: GenerateRequest) -> StreamingResponse:
     bl_number = req.bl_number.strip()
     marchandise = req.marchandise_type.strip()
     weight = req.weight_of_all_containers.strip()
+    navire = req.navire.strip()
+    gros = req.gros.strip()
+    article = req.article.strip()
 
     if force_upper:
         transit_base = transit_base.upper()
@@ -625,6 +656,9 @@ def generate(req: GenerateRequest) -> StreamingResponse:
         company_name = company_name.upper()
         bl_number = bl_number.upper()
         marchandise = marchandise.upper()
+        navire = navire.upper()
+        gros = gros.upper()
+        article = article.upper()
 
     # AKKON gets a dedicated Mise à Quai template that also prints the BL number,
     # but only when a BL number was actually entered. If AKKON is chosen without a
@@ -721,6 +755,10 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                 lettre_bytes: bytes | None = None
                 mise_docs: List[tuple] = []  # (zip_name, single_copy_bytes)
 
+                # Navire / Gros / Article go in the blanks after these labels
+                # (BON values bold like the rest of the BON; LETTRE values in
+                # regular weight like its other values). Empty -> blank kept.
+                Blank = _paper_blanks().Blank
                 if req.doc_bon or req.doc_merge:
                     bon_bytes = render_to_bytes(TPL_BON, {
                         **common,
@@ -728,13 +766,20 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                         "containers_20": numbers_for_size("20"),
                         "containers_40": numbers_for_size("40"),
                         "containers_45": numbers_for_size("45"),
-                    })
+                    }, blanks=[
+                        Blank(r"^\s*NAVIRE\s*:", navire, FONT_BON),
+                        Blank(r"\bGROS\s*:", gros, FONT_BON),
+                        Blank(r"\bARTICLE\s*:", article, FONT_BON),
+                    ])
                 if req.doc_lettre or req.doc_merge:
                     lettre_bytes = render_to_bytes(TPL_LETTRE, {
                         **common,
                         "transit_name": transit_lettre,
                         "containers_size": containers_size,
-                    })
+                    }, blanks=[
+                        Blank(r"\bGROS\s*N\s*°", gros, FONT_LETTRE, bold=False),
+                        Blank(r"^\s*NAVIRE\s*:", navire, FONT_LETTRE, bold=False),
+                    ])
                 if req.doc_mise or req.doc_merge:
                     used_names: set = set()
                     for c in req.containers:

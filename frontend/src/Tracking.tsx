@@ -438,10 +438,12 @@ function withAkkonEta(s: Shipment): Shipment {
   return sum.eta === s.eta ? s : { ...s, eta: sum.eta, etaSource: sum.eta ? "auto" : "" };
 }
 
+/* Only the words on screen changed: the saved keys stay "transit" /
+ * "arrived" / "done", so lists already saved or exported keep their status. */
 const STATUS_LABEL: Record<Status, string> = {
   transit: "In transit",
-  arrived: "Arrived",
-  done: "Done",
+  arrived: "Arrived and not validated",
+  done: "Validated",
 };
 
 type Filter = "all" | Status;
@@ -526,7 +528,7 @@ export default function Tracking({ active }: { active: boolean }) {
       );
       flash(
         etaDmy
-          ? `${blNo}: arrival ${etaDmy} (${actual ? "actual" : "estimated"}) saved${arrived ? " — marked Arrived" : ""}.`
+          ? `${blNo}: arrival ${etaDmy} (${actual ? "actual" : "estimated"}) saved${arrived ? ` — marked ${STATUS_LABEL.arrived}` : ""}.`
           : `${blNo}: the arrival notice has no arrival date yet.`
       );
     };
@@ -595,8 +597,9 @@ export default function Tracking({ active }: { active: boolean }) {
     [update]
   );
 
-  // the button checks every Akkon BL not Done (an "Arrived" one may still be
-  // waiting for its final ship); opening the page re-checks only "In transit"
+  // the button checks every Akkon BL not Validated (an "Arrived and not
+  // validated" one may still be waiting for its final ship); opening the page
+  // re-checks only "In transit"
   const checkAllAkkon = async (onlyStale = false) => {
     const ids = listRef.current
       .filter((s) => s.carrier === "AKKON" && (s.status === "transit" || (!onlyStale && s.status === "arrived")))
@@ -1008,9 +1011,11 @@ export default function Tracking({ active }: { active: boolean }) {
  * ======================================================================== */
 
 function EtaBadge({ s }: { s: Shipment }) {
+  // the check mark belongs to "Validated" — on "not validated" it would say the opposite
   if (s.status === "arrived")
-    return <span className="trk-badge trk-badge-green"><Check size={12} /> Arrived</span>;
-  if (s.status === "done") return <span className="trk-badge trk-badge-grey">Done</span>;
+    return <span className="trk-badge trk-badge-green"><Anchor size={12} /> {STATUS_LABEL.arrived}</span>;
+  if (s.status === "done")
+    return <span className="trk-badge trk-badge-grey"><Check size={12} /> {STATUS_LABEL.done}</span>;
   const d = daysUntil(s.eta);
   if (d === null) {
     const sum = s.carrier === "AKKON" && s.auto?.found ? akkonSummary(s.auto.rows) : null;
@@ -1068,7 +1073,7 @@ function ShipmentCard({
   const sum = s.carrier === "AKKON" ? akkonSummary(s.auto?.rows) : null;
   const rows = s.auto?.rows ?? [];
   const d = daysUntil(s.eta);
-  // marked Arrived while Akkon shows no arrival at the final port yet
+  // marked "Arrived and not validated" while Akkon shows no arrival at the final port yet
   const akkonNotYet =
     s.status === "arrived" && s.etaSource !== "manual" && !!s.auto?.found && !!sum && (!sum.eta || (daysUntil(sum.eta) ?? 0) > 0);
 

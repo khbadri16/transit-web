@@ -23,6 +23,16 @@ the rest of each line stays where it is (a value too long for its blank is
 printed smaller): `frontend/api/paper_blanks.py`. Left empty, the blanks stay
 as they are, to be written by hand.
 
+**The Bon de Commande always prints on one page**, however many containers it
+lists (`frontend/api/paper_fit.py`). Its Sélection column takes one container
+number per line, so from 4 containers of one size (3 of 45') its table grows.
+On the rendered copy (never the template), the empty lines that end the paper
+are dropped (they used to spill onto a blank page at the end of the merged
+folder), and the table's growth is taken out of the empty lines above "Cachet
+signature", which stays in its place. Past 8 containers of one size the
+numbers are printed a little smaller, then two or three to a line (down to
+6 pt). A container number is never cut across two lines.
+
 The DCP part remembers each importer's fixed lines (المستورد, رقم س ت, تاريخ
 س ت, العنوان) in the browser only (`src/DcpClientBook.tsx`): pick a saved
 client to fill them; they are saved / updated automatically on generate, and

@@ -109,7 +109,7 @@ def fill_blanks(document, blanks: Sequence[Blank]) -> List[str]:
     text matches its label. `document` is the rendered python-docx Document.
     Returns the labels that were not found (their value is not printed)."""
     body = document.element.body
-    styles = _Styles(document)
+    styles = RunStyles(document)
     text_width = _text_width_pt(body)
     missing = []
     for blank in blanks:
@@ -126,7 +126,7 @@ def fill_blanks(document, blanks: Sequence[Blank]) -> List[str]:
 # --------------------------------------------------------------------------
 
 
-def _fill(p, blank: Blank, value: str, styles: "_Styles", text_width: float) -> bool:
+def _fill(p, blank: Blank, value: str, styles: "RunStyles", text_width: float) -> bool:
     chars = _chars(p)
     text = "".join(ch for _, ch in chars)
     m = re.search(blank.label, text)
@@ -192,7 +192,7 @@ def _fill(p, blank: Blank, value: str, styles: "_Styles", text_width: float) -> 
     if val_bold != src_bold:
         _set_bold(value_rpr, val_bold, styles.style_bold(p))
     if hp != src_hp:
-        _set_size(value_rpr, hp)
+        set_size(value_rpr, hp)
     new_runs = [_new_run(blank_rpr, " "), _new_run(value_rpr, value)]
     if bounded:
         new_runs.append(_new_run(blank_rpr, " " * (_GAP_AFTER + pad)))
@@ -260,6 +260,11 @@ def _units(ch: str, font: str, bold: bool) -> int:
     return max(table)  # unknown: as wide as the widest letter
 
 
+def char_width_pt(ch: str, font: str, bold: bool, half_points: int) -> float:
+    """Printed width of one character, in points."""
+    return _units(ch, font, bold) * half_points / (2 * UNITS_PER_EM)
+
+
 # --------------------------------------------------------------------------
 # Page and run properties
 # --------------------------------------------------------------------------
@@ -301,7 +306,7 @@ def _on(el) -> bool:
     return el is not None and (el.get(qn("w:val")) or "1").lower() not in ("0", "false", "off")
 
 
-class _Styles:
+class RunStyles:
     """What a run's size and boldness are when the run itself doesn't say:
     the paragraph's style (and the styles it is based on), then the
     document defaults."""
@@ -336,11 +341,13 @@ class _Styles:
 
     def size(self, run, p) -> int:
         """In half-points (Word's own default: 10 pt)."""
-        el = self._own_or_inherited(run, p, "w:sz")
-        try:
-            return int(el.get(qn("w:val")))
-        except (AttributeError, TypeError, ValueError):
-            return 20
+        return _half_points(self._own_or_inherited(run, p, "w:sz"))
+
+    def mark_size(self, p) -> int:
+        """Size of the paragraph mark, in half-points: the height of an empty
+        paragraph's line (and Word lets it make a last line taller)."""
+        el = p.find(f"{qn('w:pPr')}/{qn('w:rPr')}/{qn('w:sz')}")
+        return _half_points(el if el is not None else self._inherited(p, "w:sz"))
 
     def bold(self, run, p) -> bool:
         return _on(self._own_or_inherited(run, p, "w:b"))
@@ -351,6 +358,14 @@ class _Styles:
 
 def _on_attr(value: Optional[str]) -> bool:
     return (value or "0").lower() in ("1", "true", "on")
+
+
+def _half_points(sz) -> int:
+    """A w:sz element's value (Word's own default: 10 pt)."""
+    try:
+        return int(sz.get(qn("w:val")))
+    except (AttributeError, TypeError, ValueError):
+        return 20
 
 
 # --------------------------------------------------------------------------
@@ -389,7 +404,7 @@ def _set_bold(rpr, on: bool, style_bold: bool) -> None:
             _insert_in_order(rpr, el)
 
 
-def _set_size(rpr, half_points: int) -> None:
+def set_size(rpr, half_points: int) -> None:
     for tag in ("w:sz", "w:szCs"):
         el = rpr.find(qn(tag))
         if el is None:

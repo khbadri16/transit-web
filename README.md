@@ -23,6 +23,16 @@ the rest of each line stays where it is (a value too long for its blank is
 printed smaller): `frontend/api/paper_blanks.py`. Left empty, the blanks stay
 as they are, to be written by hand.
 
+**The Bon de Commande always prints on one page**, however many containers it
+lists (`frontend/api/paper_fit.py`). Its Sélection column takes one container
+number per line, so from 4 containers of one size (3 of 45') its table grows.
+On the rendered copy (never the template), the empty lines that end the paper
+are dropped (they used to spill onto a blank page at the end of the merged
+folder), and the table's growth is taken out of the empty lines above "Cachet
+signature", which stays in its place. Past 8 containers of one size the
+numbers are printed a little smaller, then two or three to a line (down to
+6 pt). A container number is never cut across two lines.
+
 The DCP part remembers each importer's fixed lines (المستورد, رقم س ت, تاريخ
 س ت, العنوان) in the browser only (`src/DcpClientBook.tsx`): pick a saved
 client to fill them; they are saved / updated automatically on generate, and
@@ -40,12 +50,16 @@ A third page, **Tracking** (`#/tracking`), keeps the list of BLs being
 followed (saved in the browser; Export / Import moves it between computers).
 AKKON BLs are checked automatically by the server (`POST /api/tracking/akkon`,
 `frontend/api/akkon_tracking.py`, which posts Akkon's public tracking form and
-reads its result table). Their arrival date is Akkon's **Final ETA** (arrival at
-the final port): Akkon's ETA column is only the port of discharge — on a
-transhipment, the port where the container changes ship — so while the Final
-ETA is empty the BL shows "Waiting for final ETA" (with that port's ETA beside
-it). Lists saved before this rule are corrected when the page opens, and
-"Check Akkon" refreshes every Akkon BL that is not Validated. Each BL has a
+reads its result table). Their arrival date depends on the route. When the
+ship sails **straight to the final port** (e.g. DERINCE → ANNABA), Akkon only
+gives an ETA (Transhipment, Final Destination and Final ETA stay empty): that
+**ETA** is the arrival date. On a **transhipment** (e.g. NANSHA → DERINCE, then
+another ship to ANNABA), Akkon names a Final Destination other than the port of
+discharge, and its ETA column is only the port where the container changes
+ship: the arrival date is the **Final ETA**, and while it is empty the BL shows
+"Waiting for final ETA" (with that port's ETA beside it). Lists saved before
+this rule are corrected when the page opens, and "Check Akkon" refreshes every
+Akkon BL that is not Validated. Each BL has a
 status: **In transit** → **Arrived and not validated** → **Validated** (the
 "Active" tab shows the first two; lists saved before these names keep their
 status). MSC, MAERSK and COSCO open their own tracking page

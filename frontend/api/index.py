@@ -333,10 +333,24 @@ def _paper_blanks():
     return paper_blanks
 
 
-def render_to_bytes(template_name: str, context: dict, blanks=()) -> bytes:
+def _paper_fit():
+    """api/paper_fit.py, imported like the other helper modules."""
+    try:
+        from api import paper_fit
+    except ImportError:  # loaded outside the package context
+        import sys
+        if str(BASE_DIR) not in sys.path:
+            sys.path.append(str(BASE_DIR))
+        import paper_fit
+    return paper_fit
+
+
+def render_to_bytes(template_name: str, context: dict, blanks=(), growing=None) -> bytes:
     """Render one template entirely in memory and return the .docx bytes.
     `blanks` (paper_blanks.Blank): values written into the paper's blank
-    spaces after rendering — the template file itself is never modified."""
+    spaces after rendering. `growing` (paper_fit.GrowingCells): table cells
+    whose text grows with the data — the paper is kept on one page around
+    them. The template file itself is never modified."""
     tpl_path = TEMPLATE_DIR / template_name
     if not tpl_path.exists():
         raise HTTPException(
@@ -349,6 +363,8 @@ def render_to_bytes(template_name: str, context: dict, blanks=()) -> bytes:
         missing = _paper_blanks().fill_blanks(doc.docx, blanks)
         if missing:  # the template no longer prints that label
             print(f"{template_name}: no blank found after {missing}")
+    if growing is not None:
+        _paper_fit().keep_on_one_page(doc.docx, growing)
     out = io.BytesIO()
     doc.save(out)
     return out.getvalue()
@@ -759,18 +775,22 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                 # (BON values bold like the rest of the BON; LETTRE values in
                 # regular weight like its other values). Empty -> blank kept.
                 Blank = _paper_blanks().Blank
+                # However many containers the BON lists, it stays on one page:
+                # no blank page at the end of the folder (api/paper_fit.py).
+                GrowingCells = _paper_fit().GrowingCells
                 if req.doc_bon or req.doc_merge:
+                    by_size = {s: numbers_for_size(s) for s in ("20", "40", "45")}
                     bon_bytes = render_to_bytes(TPL_BON, {
                         **common,
                         "transit_name": transit_bare,
-                        "containers_20": numbers_for_size("20"),
-                        "containers_40": numbers_for_size("40"),
-                        "containers_45": numbers_for_size("45"),
+                        "containers_20": by_size["20"],
+                        "containers_40": by_size["40"],
+                        "containers_45": by_size["45"],
                     }, blanks=[
                         Blank(r"^\s*NAVIRE\s*:", navire, FONT_BON),
                         Blank(r"\bGROS\s*:", gros, FONT_BON),
                         Blank(r"\bARTICLE\s*:", article, FONT_BON),
-                    ])
+                    ], growing=GrowingCells(list(by_size.values()), FONT_BON))
                 if req.doc_lettre or req.doc_merge:
                     lettre_bytes = render_to_bytes(TPL_LETTRE, {
                         **common,

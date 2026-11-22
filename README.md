@@ -50,12 +50,16 @@ A third page, **Tracking** (`#/tracking`), keeps the list of BLs being
 followed (saved in the browser; Export / Import moves it between computers).
 AKKON BLs are checked automatically by the server (`POST /api/tracking/akkon`,
 `frontend/api/akkon_tracking.py`, which posts Akkon's public tracking form and
-reads its result table). Their arrival date is Akkon's **Final ETA** (arrival at
-the final port): Akkon's ETA column is only the port of discharge — on a
-transhipment, the port where the container changes ship — so while the Final
-ETA is empty the BL shows "Waiting for final ETA" (with that port's ETA beside
-it). Lists saved before this rule are corrected when the page opens, and
-"Check Akkon" refreshes every Akkon BL that is not Validated. Each BL has a
+reads its result table). Their arrival date depends on the route. When the
+ship sails **straight to the final port** (e.g. DERINCE → ANNABA), Akkon only
+gives an ETA (Transhipment, Final Destination and Final ETA stay empty): that
+**ETA** is the arrival date. On a **transhipment** (e.g. NANSHA → DERINCE, then
+another ship to ANNABA), Akkon names a Final Destination other than the port of
+discharge, and its ETA column is only the port where the container changes
+ship: the arrival date is the **Final ETA**, and while it is empty the BL shows
+"Waiting for final ETA" (with that port's ETA beside it). Lists saved before
+this rule are corrected when the page opens, and "Check Akkon" refreshes every
+Akkon BL that is not Validated. Each BL has a
 status: **In transit** → **Arrived and not validated** → **Validated** (the
 "Active" tab shows the first two; lists saved before these names keep their
 status). MSC, MAERSK and COSCO open their own tracking page

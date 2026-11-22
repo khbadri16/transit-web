@@ -15,11 +15,14 @@ The answer is the page's "GridView1" table — one row per container:
   Akkon BL No | Container No | Vessel Name | Voyage | Port Of Loading | ETS |
   Port Of Discharge | ETA | Transhipment Vessel | Transhipment Voyage |
   Final Destination | Final ETA
-ETA is the arrival at the Port Of Discharge — on a transhipment, only the port
-where the container changes ship. Final ETA is the arrival at the Final
-Destination, empty until the next ship is known: it is the arrival date the
-Tracking page uses (src/Tracking.tsx, akkonSummary). Until then Akkon repeats
-the first ship in Transhipment Vessel / Voyage. Rows are sent as read.
+ETA is the arrival at the Port Of Discharge. When the ship sails straight to
+the final port, that is all Akkon gives (Transhipment, Final Destination and
+Final ETA are empty): the ETA is the arrival date. On a transhipment the Port
+Of Discharge is only where the container changes ship, and Akkon names the
+Final Destination; Final ETA is the arrival there, empty until the next ship is
+known (until then Akkon repeats the first ship in Transhipment Vessel /
+Voyage). The Tracking page picks the date (src/Tracking.tsx, akkonSummary).
+Rows are sent as read.
 """
 
 import re

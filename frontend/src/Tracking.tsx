@@ -29,7 +29,8 @@ import {
  *
  *  - AKKON is checked automatically by our server (api/akkon_tracking.py):
  *    vessel, transhipment, ETA and final ETA come straight from Akkon. The
- *    arrival date is Akkon's FINAL ETA (see akkonSummary below).
+ *    arrival date is Akkon's ETA when the ship sails straight to the final
+ *    port, its FINAL ETA after a transhipment (see akkonSummary below).
  *  - MSC, MAERSK, COSCO open their own tracking page with the BL already
  *    searched (their pages accept it in the link).
  *  - CMA CGM and HMM don't accept a BL in a link: the BL is copied to the
@@ -205,7 +206,7 @@ function detectCarrier(bl: string): CarrierId | null {
   if (/^MAEU/.test(b) || /^\d{9}$/.test(b)) return "MAERSK";
   if (/^COSU/.test(b)) return "COSCO";
   if (/^HDMU/.test(b)) return "HMM";
-  if (/^AKKN/.test(b)) return "AKKON";
+  if (/^AKK[A-Z]{3}/.test(b)) return "AKKON"; // AKK + loading port: AKKNSA (Nansha), AKKIZT (Izmit)…
   return null;
 }
 
@@ -353,16 +354,23 @@ function saveShipments(list: Shipment[]) {
 
 /* ---- Akkon: when does the folder really arrive? ---------------------------
  * Akkon gives two arrival dates per container:
- *  - ETA       = arrival at the Port Of Discharge. On a transhipment that is
- *                only the port where the container changes ship.
- *  - Final ETA = arrival at the Final Destination — the folder's arrival.
- *                Empty while the container waits for its next ship.
- * So the arrival date is the Final ETA, never the ETA of a transhipment port.
- * The ETA is used only when Akkon shows that the port of discharge IS the
- * final destination (no transhipment). A BL arrives with its last container.
- * Real example (AKKNSA26045668, Nov 2026): NANSHA -> DERINCE ETA 23/10/2026,
- * Final Destination ANNABA, Final ETA empty: waiting at Derince. Until the
- * next ship is known, Akkon repeats the first ship as Transhipment Vessel. */
+ *  - ETA       = arrival at the Port Of Discharge.
+ *  - Final ETA = arrival at the Final Destination, after a transhipment.
+ * and there are two kinds of BL:
+ *  - Direct: the ship sails straight to the final port. Akkon leaves
+ *    Transhipment, Final Destination and Final ETA empty: the ETA is the
+ *    arrival. Real example (AKKIZT26050179, Nov 2026): DERINCE -> ANNABA on
+ *    MV SHAN, ETA 26/10/2026, nothing more.
+ *  - Transhipment: the container changes ship at the port of discharge.
+ *    Akkon names a Final Destination other than that port: the arrival is
+ *    the Final ETA, empty while the container waits for its next ship —
+ *    never the ETA, which is only the transhipment port's. Real examples:
+ *    AKKNSA26045668 (Nov 2026) NANSHA -> DERINCE ETA 23/10/2026, Final
+ *    Destination ANNABA, Final ETA empty: waiting at Derince (until the next
+ *    ship is known Akkon repeats the first ship as Transhipment Vessel);
+ *    AKKNSA26046965: NANSHA -> DERINCE ETA 04/11/2026, then MV MAIKE D to
+ *    ANNABA, Final ETA 22/11/2026.
+ * A BL arrives with its last container. */
 
 /** "ANNABA" / "Annaba, Algeria" / "ANNABA PORT" -> the same port ("BAR" and "BARCELONA" are not). */
 const samePort = (a = "", b = "") => {
@@ -382,16 +390,24 @@ const nextShip = (r: AkkonRow) => {
   return r.ts_vessel && !(same(r.ts_vessel, r.vessel) && same(r.ts_voyage, r.voyage)) ? r.ts_vessel : "";
 };
 
-/** One container's arrival at its final port, "" while Akkon doesn't know it. */
+/** A transhipment: Akkon names the next ship, or a final destination other
+ *  than the port of discharge. Anything else is a direct BL: its port of
+ *  discharge IS the final port (Akkon then leaves Final Destination empty). */
+const isTranshipment = (r: AkkonRow) =>
+  !!nextShip(r) || (!!r.final_destination && !samePort(r.final_destination, r.pod));
+
+/** One container's arrival at its final port, "" while Akkon doesn't know it:
+ *  the Final ETA after a transhipment, the ETA of a direct BL. */
 function akkonFinalEta(r: AkkonRow): string {
   if (r.final_eta) return akkonDate(r.final_eta);
-  const direct = !nextShip(r) && !!r.final_destination && samePort(r.final_destination, r.pod);
-  return direct ? akkonDate(r.eta) : "";
+  return isTranshipment(r) ? "" : akkonDate(r.eta);
 }
 
 type AkkonSummary = {
-  /** arrival at the final port (dd/mm/yyyy) — "" while Akkon has no Final ETA */
+  /** arrival at the final port (dd/mm/yyyy) — "" while Akkon doesn't know it */
   eta: string;
+  /** the ship sails straight to the final port: the date is Akkon's ETA, not a Final ETA */
+  direct: boolean;
   /** final port */
   destination: string;
   /** ship of the last known leg */
@@ -416,12 +432,13 @@ function akkonSummary(rows?: AkkonRow[]): AkkonSummary | null {
   if (k < 0) k = finals.reduce((best, f, i) => (time(f) > time(finals[best]) ? i : best), 0);
   const r = rows[k];
   const waiting = finals.filter((f) => !f).length;
-  const transhipment = !!nextShip(r) || (!!r.final_destination && !samePort(r.final_destination, r.pod));
+  const direct = !isTranshipment(r);
   return {
     eta: waiting ? "" : finals[k],
+    direct,
     destination: r.final_destination || r.pod || "",
     vessel: nextShip(r) || r.vessel || "",
-    via: transhipment ? r.pod || "" : "",
+    via: direct ? "" : r.pod || "",
     pod: r.pod || "",
     podEta: akkonDate(r.eta),
     waiting,
@@ -429,8 +446,16 @@ function akkonSummary(rows?: AkkonRow[]): AkkonSummary | null {
   };
 }
 
+/** "ETA 26/10/2026 (direct to ANNABA)" / "final ETA 22/11/2026" / "no final ETA yet" */
+function akkonDateText(sum: AkkonSummary | null): string {
+  if (!sum?.direct) return sum?.eta ? `final ETA ${sum.eta}` : "no final ETA yet";
+  if (!sum.eta) return "no ETA yet";
+  return `ETA ${sum.eta} (direct${sum.destination ? ` to ${sum.destination}` : ""})`;
+}
+
 /** Saved Akkon answers are read again with this rule, so BLs saved before it
- *  (dated with a transhipment port's ETA) are corrected without a new check. */
+ *  are corrected without a new check: one dated with a transhipment port's
+ *  ETA, or a direct BL left "Waiting for final ETA" without its date. */
 function withAkkonEta(s: Shipment): Shipment {
   if (s.carrier !== "AKKON" || s.etaSource === "manual" || !s.auto?.found) return s;
   const sum = akkonSummary(s.auto.rows);
@@ -559,7 +584,8 @@ export default function Tracking({ active }: { active: boolean }) {
           };
           if (data.found) {
             if (data.country) patch.akkonCountry = data.country;
-            // the arrival date is the Final ETA: while Akkon has none, an old date is cleared
+            // the arrival date (the Final ETA, or the ETA of a direct BL): while
+            // Akkon has none, an old date is cleared
             if (cur.etaSource !== "manual") {
               patch.eta = sum?.eta ?? "";
               patch.etaSource = sum?.eta ? "auto" : "";
@@ -572,7 +598,7 @@ export default function Tracking({ active }: { active: boolean }) {
           const sum = akkonSummary(rows);
           flash(
             data.found
-              ? `Akkon: ${s.bl} updated — ${sum?.eta ? `final ETA ${sum.eta}` : "no final ETA yet"}.`
+              ? `Akkon: ${s.bl} updated — ${akkonDateText(sum)}.`
               : `Akkon: ${s.bl} not found — check the BL or the loading country.`,
             data.found ? "success" : "error"
           );
@@ -905,7 +931,8 @@ export default function Tracking({ active }: { active: boolean }) {
             </button>
           </div>
           <p className="mt-3 text-xs text-slate-500">
-            <span className="text-emerald-300">●</span> AKKON: vessel and arrival date (Akkon's Final ETA) are fetched automatically. Other lines: open
+            <span className="text-emerald-300">●</span> AKKON: vessel and arrival date are fetched automatically (Akkon's ETA when the ship sails
+            straight to the final port, its Final ETA after a transhipment). Other lines: open
             their page with <strong>Track</strong> and type the ETA here (HMM: <strong>Arrival notice</strong> + ⚡ Fill BL
             brings it back for you).
           </p>
@@ -1019,7 +1046,7 @@ function EtaBadge({ s }: { s: Shipment }) {
   const d = daysUntil(s.eta);
   if (d === null) {
     const sum = s.carrier === "AKKON" && s.auto?.found ? akkonSummary(s.auto.rows) : null;
-    return sum && !sum.eta ? (
+    return sum && !sum.eta && !sum.direct ? (
       <span className="trk-badge trk-badge-blue" title="Akkon has no Final ETA yet: the container has not left for its final port">
         Waiting for final ETA
       </span>
@@ -1120,7 +1147,7 @@ function ShipmentCard({
                 onClick={() => onStatus("transit")}
                 title="Akkon does not show the arrival at the final port yet"
               >
-                Akkon: {sum.eta ? `final ETA ${sum.eta}` : "no final ETA yet"} — back to In transit
+                Akkon: {akkonDateText(sum)} — back to In transit
               </button>
             )}
           </div>
@@ -1132,7 +1159,7 @@ function ShipmentCard({
               <> · ETA {sum.pod || "port of discharge"}: <span className="text-slate-300">{sum.podEta}</span></>
             ) : null}
             {sum && sum.waiting > 0 && sum.waiting < sum.total ? (
-              <> · final ETA for {sum.total - sum.waiting} of {sum.total} containers</>
+              <> · {sum.direct ? "ETA" : "final ETA"} for {sum.total - sum.waiting} of {sum.total} containers</>
             ) : null}
             {s.carrier === "AKKON" && s.auto && (
               <span className={s.auto.ok && s.auto.found ? "text-slate-500" : "text-amber-300"}>
@@ -1221,9 +1248,9 @@ function ShipmentCard({
                     <th>Loading</th>
                     <th>ETS</th>
                     <th>Discharge</th>
-                    <th title="Arrival at the port of discharge — on a transhipment, only where the container changes ship">ETA</th>
+                    <th title="Arrival at the port of discharge — the date used when the ship sails straight to the final port; on a transhipment, only where the container changes ship">ETA</th>
                     <th>Final dest.</th>
-                    <th title="Arrival at the final destination — the date used for this BL">Final ETA</th>
+                    <th title="Arrival at the final destination after a transhipment — the date used then">Final ETA</th>
                     <th>Transhipment</th>
                   </tr>
                 </thead>
@@ -1235,8 +1262,9 @@ function ShipmentCard({
                       <td>{r.pol}</td>
                       <td>{r.ets}</td>
                       <td>{r.pod}</td>
-                      <td>{r.eta}</td>
-                      <td>{r.final_destination}</td>
+                      {/* the date used for this container: its ETA when it sails straight to the final port */}
+                      <td className={!r.final_eta && !isTranshipment(r) ? "font-semibold text-white" : undefined}>{r.eta}</td>
+                      <td>{r.final_destination || <span className="text-slate-500">—</span>}</td>
                       <td className="font-semibold text-white">{r.final_eta || <span className="font-normal text-slate-500">—</span>}</td>
                       <td>{[r.ts_vessel, r.ts_voyage].filter(Boolean).join(" · ")}</td>
                     </tr>
@@ -1276,6 +1304,15 @@ function EditForm({ s, onSave, onCancel }: { s: Shipment; onSave: (p: Partial<Sh
       ...(bl !== s.bl || f.carrier !== s.carrier ? { auto: undefined } : {}),
     });
   };
+  // where an automatic date comes from: Akkon (ETA of a direct BL, else Final ETA) or HMM's arrival notice
+  const autoEta =
+    s.etaSource !== "auto"
+      ? ""
+      : s.carrier === "AKKON"
+        ? akkonSummary(s.auto?.rows)?.direct
+          ? "(Akkon ETA — direct)"
+          : "(Akkon final ETA)"
+        : "(arrival notice)";
   return (
     <div className="mt-4 pt-4 border-t border-slate-800 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <label className="flex flex-col gap-1">
@@ -1297,7 +1334,7 @@ function EditForm({ s, onSave, onCancel }: { s: Shipment; onSave: (p: Partial<Sh
         <input className="input" value={f.client} onChange={(e) => setF({ ...f, client: e.target.value })} />
       </label>
       <label className="flex flex-col gap-1">
-        <span className="text-xs text-slate-400">ETA {s.etaSource === "auto" ? "(Akkon final ETA)" : ""}</span>
+        <span className="text-xs text-slate-400">ETA {autoEta}</span>
         <input className="input" inputMode="numeric" placeholder="dd/mm/yyyy" value={f.eta} onChange={(e) => setF({ ...f, eta: maskDate(e.target.value) })} />
       </label>
       <label className="flex flex-col gap-1">

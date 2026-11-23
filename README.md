@@ -13,15 +13,19 @@ dated on the day it is generated) and the Facture de transit (toggle-gated,
 fully independent, with live TVA 9% / TAUX / TOTAL TTC calculations — always a
 standalone file, never merged).
 
-**Navire, Gros N° and Article N°** (Preparation › Global details › Ship
-arrival) are optional: they are known only once the ship has arrived. Typed,
-they are written into the blank spaces the Bon de Commande (NAVIRE, GROS,
-ARTICLE) and the Lettre d'Engagement (GROSN°, NAVIRE — it has no ARTICLE line)
-leave after these labels. Only the rendered copy is filled, the .docx templates
-are never modified. The value is measured with the papers' real font widths, so
-the rest of each line stays where it is (a value too long for its blank is
-printed smaller): `frontend/api/paper_blanks.py`. Left empty, the blanks stay
-as they are, to be written by hand.
+**Navire, Arrival date, Gros N° and Article N°** (Preparation › Global
+details › Ship arrival) are optional: they are known only once the ship has
+arrived. Typed, they are written into the blank spaces the Bon de Commande
+(NAVIRE, DATE ARR NAVIRE, GROS, ARTICLE) and the Lettre d'Engagement (GROSN°,
+NAVIRE — it has no arrival date nor ARTICLE line: its DEBARQUEE LE is another
+date, left for the pen) leave after these labels. Only
+the rendered copy is filled, the .docx templates are never modified. The value
+is measured with the papers' real font widths, so the rest of each line stays
+where it is (a value too long for its blank is printed smaller):
+`frontend/api/paper_blanks.py`. The date's day and month are centered in the
+`__ / __ /2026` blanks, the slashes and the year staying where they are printed
+(another year replaces only the year's digits); a date that does not exist is
+refused. Left empty, the blanks stay as they are, to be written by hand.
 
 **The Bon de Commande always prints on one page**, however many containers it
 lists (`frontend/api/paper_fit.py`). Its Sélection column takes one container

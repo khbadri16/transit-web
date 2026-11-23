@@ -63,6 +63,7 @@ type GeneratePayload = {
   navire: string; // ship's name — Bon + Lettre
   gros: string; // gros number — Bon + Lettre
   article: string; // article number — Bon only (the Lettre has no Article line)
+  arrival_date: string; // dd/mm/yyyy — Bon only (DATE ARR NAVIRE)
   force_uppercase: boolean;
   containers: { number: string; size: Size }[];
   /* Which transit documents to generate */
@@ -539,6 +540,19 @@ const maskDate = (value: string) => {
   return `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}`;
 };
 
+/** The arrival date the papers can print: "" (left blank), "dd/mm/yyyy", or
+ *  "dd/mm" (the year the paper prints) — a date that exists. Same rule as the
+ *  server, which refuses any other. */
+const arrivalDateOk = (value: string) => {
+  const v = value.trim();
+  if (!v) return true;
+  const m = /^(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?$/.exec(v);
+  if (!m) return false;
+  const [d, mo, y] = [Number(m[1]), Number(m[2]), Number(m[3] || 2000)]; // 2000: 29/02 exists
+  const date = new Date(y, mo - 1, d);
+  return date.getFullYear() === y && date.getMonth() === mo - 1 && date.getDate() === d;
+};
+
 /** History entries hold the POSTed shape — rebuild the editable one (ids). */
 const restoreFacture = (p?: FacturePayload): FactureFields => {
   const base = initialFacture();
@@ -576,6 +590,7 @@ type FormState = {
   navire: string; // optional (ship arrival)
   gros: string; // optional (ship arrival)
   article: string; // optional (ship arrival)
+  arrival_date: string; // optional (ship arrival), dd/mm/yyyy
   force_uppercase: boolean;
   containers: Container[];
   doc_mise: boolean;
@@ -602,6 +617,7 @@ const initialForm: FormState = {
   navire: "",
   gros: "",
   article: "",
+  arrival_date: "",
   force_uppercase: true,
   containers: [],
   /* Default: only the single merged Word file; the separate files are opt-in. */
@@ -1315,6 +1331,7 @@ function App() {
       navire: p.navire ?? "",
       gros: p.gros ?? "",
       article: p.article ?? "",
+      arrival_date: p.arrival_date ?? "",
       force_uppercase: p.force_uppercase ?? true,
       containers: (p.containers ?? []).map((c) => ({
         id: crypto.randomUUID(),
@@ -1384,6 +1401,7 @@ function App() {
       navire: form.navire.trim(),
       gros: form.gros.trim(),
       article: form.article.trim(),
+      arrival_date: form.arrival_date.trim(),
       force_uppercase: form.force_uppercase,
       containers: form.containers.map((c) => ({
         number: c.number.trim(),
@@ -1615,7 +1633,8 @@ function App() {
                       d'Engagement. Left empty, the space stays blank to write by hand.
                     </span>
                   </p>
-                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-[2fr_1fr_1fr] gap-4">
+                  {/* laid out like the Bon: NAVIRE · DATE ARR NAVIRE, then GROS · ARTICLE */}
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <Field label="Navire (ship name)">
                       <input
                         className="input"
@@ -1627,6 +1646,30 @@ function App() {
                         maxLength={40}
                         style={upper}
                       />
+                    </Field>
+                    <Field label="Arrival date">
+                      <input
+                        className="input peer"
+                        type="text"
+                        inputMode="numeric"
+                        name="arrival_date"
+                        value={form.arrival_date}
+                        onChange={(e) =>
+                          setForm((prev) => ({ ...prev, arrival_date: maskDate(e.target.value) }))
+                        }
+                        placeholder="dd/mm/yyyy"
+                        maxLength={10}
+                      />
+                      {arrivalDateOk(form.arrival_date) ? (
+                        <span className="text-[11px] text-slate-500">
+                          Bon de Commande only
+                        </span>
+                      ) : (
+                        // amber once the field is left, neutral while typing
+                        <span className="text-[11px] text-amber-300 peer-focus:text-slate-500">
+                          Not a valid date: dd/mm/yyyy
+                        </span>
+                      )}
                     </Field>
                     <Field label="Gros N°">
                       <input

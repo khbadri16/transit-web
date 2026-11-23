@@ -196,6 +196,7 @@ class GenerateRequest(BaseModel):
     navire: str = ""         # ship's name — BON + LETTRE
     gros: str = ""           # gros number — BON + LETTRE
     article: str = ""        # article number — BON only (no ARTICLE line in the LETTRE)
+    arrival_date: str = ""   # dd/mm/yyyy — BON only (DATE ARR NAVIRE)
     force_uppercase: bool = True
     containers: List[Container] = Field(default_factory=list)
     # Which transit documents to generate (checkboxes in the UI)
@@ -232,6 +233,28 @@ def sanitize_filename(name: str) -> str:
 def strip_transit_prefix(name: str) -> str:
     """'TRANSIT ALPHA' -> 'ALPHA' (bare in BON/MISE, prefixed in the LETTRE)."""
     return re.sub(r"^\s*transit[\s:,\-]+", "", name or "", flags=re.IGNORECASE).strip()
+
+
+def parse_arrival_date(text: str):
+    """The arrival date typed in the form, for the BON's "DATE ARR NAVIRE :
+    __ / __ /2026" line: '15/11/2026' -> ('15', '11', '2026'); '5/1' ->
+    ('05', '01', ''), i.e. the year the paper prints. Empty -> None. A date
+    that does not exist is refused (HTTP 400): never a wrong date on the paper."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    m = re.fullmatch(r"(\d{1,2})\s*[/.-]\s*(\d{1,2})(?:\s*[/.-]\s*(\d{4}))?", text)
+    if m:
+        day, month, year = int(m.group(1)), int(m.group(2)), m.group(3) or ""
+        try:
+            datetime(int(year or 2000), month, day)  # 2000: 29/02 exists
+            return f"{day:02d}", f"{month:02d}", year
+        except ValueError:
+            pass
+    raise HTTPException(
+        status_code=400,
+        detail=f'Arrival date "{text}" is not a valid date: type it as dd/mm/yyyy, e.g. 15/11/2026.',
+    )
 
 
 def parse_money(value: str):
@@ -774,7 +797,12 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                 # Navire / Gros / Article go in the blanks after these labels
                 # (BON values bold like the rest of the BON; LETTRE values in
                 # regular weight like its other values). Empty -> blank kept.
-                Blank = _paper_blanks().Blank
+                # The arrival date goes in the BON's DATE ARR NAVIRE line only,
+                # day and month centered in their blanks, bold like the year the
+                # template prints. (The LETTRE's DEBARQUEE LE is another date:
+                # it stays blank, for the pen.)
+                Blank, DateBlank = _paper_blanks().Blank, _paper_blanks().DateBlank
+                day, month, year = parse_arrival_date(req.arrival_date) or ("", "", "")
                 # However many containers the BON lists, it stays on one page:
                 # no blank page at the end of the folder (api/paper_fit.py).
                 GrowingCells = _paper_fit().GrowingCells
@@ -790,6 +818,7 @@ def generate(req: GenerateRequest) -> StreamingResponse:
                         Blank(r"^\s*NAVIRE\s*:", navire, FONT_BON),
                         Blank(r"\bGROS\s*:", gros, FONT_BON),
                         Blank(r"\bARTICLE\s*:", article, FONT_BON),
+                        DateBlank(r"DATE\s+ARR\s+NAVIRE\s*:", day, month, year, FONT_BON),
                     ], growing=GrowingCells(list(by_size.values()), FONT_BON))
                 if req.doc_lettre or req.doc_merge:
                     lettre_bytes = render_to_bytes(TPL_LETTRE, {

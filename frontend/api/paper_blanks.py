@@ -19,6 +19,12 @@ RENDERED copy, in memory. The .docx templates themselves are never modified.
     never so far that the line breaks in two (it shrinks more instead, to 5 pt
     at the very least).
   * An empty value changes nothing: the paper keeps its blank for the pen.
+
+The arrival date goes in a date line, "DATE ARR NAVIRE :  __ / __ /2026": the
+day and the month are written centered in their two blanks, with exactly as
+much space on each side, so the slashes and the year stay where the template
+prints them. The year is replaced only by another year (all digits have the
+same width: nothing moves).
 """
 
 import copy
@@ -104,19 +110,41 @@ class Blank:
     bold: Optional[bool] = None  # None = like the blank; False = regular weight
 
 
-def fill_blanks(document, blanks: Sequence[Blank]) -> List[str]:
-    """Write every non-empty value into its blank, in the first paragraph whose
-    text matches its label. `document` is the rendered python-docx Document.
-    Returns the labels that were not found (their value is not printed)."""
+@dataclass(frozen=True)
+class DateBlank:
+    """A date line of a paper, "<label> __ / __ /2026", and the date to write."""
+    label: str                   # regex, searched in a paragraph's text
+    day: str                     # "15" ("" = the line stays blank, for the pen)
+    month: str                   # "11"
+    year: str                    # "2027", or "" = the year the paper prints
+    font: str                    # the paper's text font, e.g. "Times New Roman"
+    bold: Optional[bool] = None  # None = like the blank; False = regular weight
+
+
+# what follows a date's label: day blank / month blank / the printed year
+_DATE_PARTS = r"(?P<day>[ \u00a0._]*)/(?P<month>[ \u00a0._]*)/[ \u00a0]*(?P<year>\d{4})"
+
+
+def fill_blanks(document, blanks: Sequence[object]) -> List[str]:
+    """Write every value into its blank (Blank) or date line (DateBlank), in the
+    first paragraph whose text matches its label. `document` is the rendered
+    python-docx Document. An empty value is skipped: its blank stays for the
+    pen. Returns the labels that were not found (their value is not printed)."""
     body = document.element.body
     styles = RunStyles(document)
     text_width = _text_width_pt(body)
     missing = []
     for blank in blanks:
-        value = _clean(blank.value)
-        if not value:
-            continue
-        if not any(_fill(p, blank, value, styles, text_width) for p in body.iter(qn("w:p"))):
+        if isinstance(blank, DateBlank):
+            if not (blank.day and blank.month):
+                continue
+            found = any(_fill_date(p, blank, styles) for p in body.iter(qn("w:p")))
+        else:
+            value = _clean(blank.value)
+            if not value:
+                continue
+            found = any(_fill(p, blank, value, styles, text_width) for p in body.iter(qn("w:p")))
+        if not found:
             missing.append(blank.label)
     return missing
 
@@ -196,7 +224,96 @@ def _fill(p, blank: Blank, value: str, styles: "RunStyles", text_width: float) -
     new_runs = [_new_run(blank_rpr, " "), _new_run(value_rpr, value)]
     if bounded:
         new_runs.append(_new_run(blank_rpr, " " * (_GAP_AFTER + pad)))
+    _replace(chars, start, stop, new_runs)
+    return True
 
+
+# --------------------------------------------------------------------------
+# A date line
+# --------------------------------------------------------------------------
+
+
+def _fill_date(p, blank: DateBlank, styles: "RunStyles") -> bool:
+    m = re.search(blank.label + _DATE_PARTS, "".join(ch for _, ch in _chars(p)))
+    if not m or m.start("day") == 0:
+        return False
+    # right to left: what is rewritten never moves the characters before it
+    if blank.year and blank.year != m.group("year"):
+        _swap_chars(p, m.start("year"), blank.year)
+    _center(p, m.start("month"), m.end("month"), blank.month, blank, styles)
+    _center(p, m.start("day"), m.end("day"), blank.day, blank, styles)
+    return True
+
+
+def _center(p, start: int, end: int, value: str, blank: DateBlank, styles: "RunStyles") -> None:
+    """Write `value` centered in the blank made of characters [start, end), in
+    the blank's formatting, with exactly as much space on each side: what
+    follows the blank stays where it was."""
+    chars = _chars(p)
+    props = {}  # run -> (bold, size in half-points)
+    for run, _ in chars:
+        if run not in props:
+            props[run] = (styles.bold(run, p), styles.size(run, p))
+    src = chars[start][0] if end > start else chars[start - 1][0]
+    src_bold, src_hp = props[src]
+    val_bold = src_bold if blank.bold is None else blank.bold
+    room = sum(char_width_pt(ch, blank.font, *props[run]) for run, ch in chars[start:end])
+    per_hp = sum(_units(ch, blank.font, val_bold) for ch in value) / (2 * UNITS_PER_EM)
+
+    hp = src_hp
+    if per_hp and per_hp * hp > room:  # wider than its blank: smaller
+        hp = max(math.ceil(src_hp * _MIN_SCALE), math.floor(room / per_hp))
+    side = max(room - per_hp * hp, 0.0) / 2
+
+    blank_rpr = _rpr_copy(src, drop_underline=end == start)
+    value_rpr = copy.deepcopy(blank_rpr)
+    if val_bold != src_bold:
+        _set_bold(value_rpr, val_bold, styles.style_bold(p))
+    if hp != src_hp:
+        set_size(value_rpr, hp)
+    spacer = _spacer_runs(blank_rpr, side, blank.font, src_bold, src_hp)
+    _replace(chars, start, end, spacer + [_new_run(value_rpr, value)]
+             + _spacer_runs(blank_rpr, side, blank.font, src_bold, src_hp))
+
+
+def _spacer_runs(rpr, width: float, font: str, bold: bool, half_points: int) -> list:
+    """Blank space exactly `width` points wide: whole spaces in the blank's
+    size, then one smaller space for the rest (never taller than the line)."""
+    unit = _units(" ", font, bold)
+    space = unit * half_points / (2 * UNITS_PER_EM)
+    whole = int(width / space + 1e-6) if space else 0
+    runs = [_new_run(rpr, " " * whole)] if whole else []
+    rest_hp = round((width - whole * space) * 2 * UNITS_PER_EM / unit) if unit else 0
+    if rest_hp >= 2:  # Word's smallest size: 1 pt
+        small = copy.deepcopy(rpr)
+        set_size(small, min(rest_hp, half_points))
+        runs.append(_new_run(small, " "))
+    return runs
+
+
+def _swap_chars(p, start: int, text: str) -> None:
+    """Replace the characters from `start` with `text`, one for one, each in
+    its own run and formatting (for characters of the same width: digits)."""
+    chars = _chars(p)
+    new = [ch for _, ch in chars]
+    new[start:start + len(text)] = list(text)
+    done = []
+    for run, _ in chars[start:start + len(text)]:
+        if run not in done:
+            done.append(run)
+            _set_text(run, "".join(new[i] for i, (r, _) in enumerate(chars) if r is run))
+
+
+# --------------------------------------------------------------------------
+# Rewriting a paragraph's runs
+# --------------------------------------------------------------------------
+
+
+def _replace(chars: List[tuple], start: int, stop: int, new_runs: list) -> None:
+    """Put `new_runs` in place of the characters [start, stop) of a paragraph
+    (`chars` as _chars gives them, start >= 1): the run holding character
+    start - 1 stays, the new runs follow it, and what is left of the runs the
+    replaced characters were in comes after them."""
     anchor = chars[start - 1][0]  # holds the label's last character
 
     def kept(run, keep) -> str:
@@ -207,20 +324,19 @@ def _fill(p, blank: Blank, value: str, styles: "RunStyles", text_width: float) -
         r = chars[i][0]
         if r is not anchor and r not in touched:
             touched.append(r)
-    for r in touched:  # what is left of them follows the value
+    for r in touched:  # what is left of them follows the new runs
         _set_text(r, kept(r, lambda i: i >= stop))
     anchor_after = kept(anchor, lambda i: i >= stop)
     if any(chars[i][0] is anchor for i in range(start, len(chars))):
         _set_text(anchor, kept(anchor, lambda i: i < start))
-    if anchor_after:  # the label's run went on after the blank
+    if anchor_after:  # the label's run went on after the replaced characters
         tail = copy.deepcopy(anchor)
         _set_text(tail, anchor_after)
-        new_runs.append(tail)
+        new_runs = new_runs + [tail]
     prev = anchor
     for r in new_runs:
         prev.addnext(r)
         prev = r
-    return True
 
 
 def _clean(value: str) -> str:

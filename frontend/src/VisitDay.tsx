@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Clock,
   FileDown,
+  History,
   KeyRound,
   Loader2,
   Lock,
@@ -21,6 +22,7 @@ import {
   Printer,
   RefreshCw,
   Trash2,
+  Undo2,
   X,
 } from "lucide-react";
 
@@ -31,10 +33,15 @@ import {
  * sees the same list. Every call carries the office access code; this PC
  * remembers it until someone presses Lock.
  *
- *   Today (pinned first)   — visit date = today
- *   1. No visit date yet   — still to check on ALCES / not programmed yet
+ *   Today (pinned first)   — To confirm: the visit day passed, not confirmed
+ *                            yet; then Today's visits (visit date = today).
+ *                            Both have "Confirm visit" (-> Passed) and "Delay
+ *                            visit": the date is removed and the client waits
+ *                            in No visit date yet, stamped Delayed from then on.
+ *   1. No visit date yet   — still to check on ALCES / not programmed yet /
+ *                            delayed
  *   2. Waiting             — visit date after today, soonest first
- *   3. Passed              — visit date before today, 10 per page
+ *   3. Passed              — confirmed visits, 10 per page
  *
  * The page asks the server every minute "did anything change?" (1 tiny
  * call) and reloads the list only when it did.
@@ -44,6 +51,10 @@ const API_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
 const CODE_KEY = "visit_code_v1";
 const POLL_MS = 60_000;
 const PAGE = 10;
+const UNDO_MS = 10_000; // how long the "Undo" of Confirm / Delay visit stays
+
+/** One "Delay visit": the day that was planned, and when it was delayed. */
+type Delay = { date: string; at: string };
 
 type Visit = {
   id: string;
@@ -52,14 +63,22 @@ type Visit = {
   place: string;
   /** "YYYY-MM-DD" or "" */
   visit_date: string;
+  /** "Confirm visit" was pressed: the visit happened (Passed visits) */
+  visited?: boolean;
+  /** every "Delay visit", oldest first — the Delayed stamp */
+  delays?: Delay[];
   created_at: string;
   updated_at: string;
 };
+
+/** What the edit form changes (never the confirmation nor the delays). */
+type Patch = Pick<Visit, "client" | "declaration" | "place" | "visit_date">;
 
 type Board = {
   today: string;
   version: number;
   no_date: Visit[];
+  to_confirm: Visit[];
   today_visits: Visit[];
   upcoming: Visit[];
   passed_total: number;
@@ -67,7 +86,11 @@ type Board = {
 
 type PassedPage = { items: Visit[]; offset: number; total: number };
 
-type Kind = "no_date" | "upcoming" | "today" | "passed";
+type Kind = "no_date" | "upcoming" | "confirm" | "today" | "passed";
+type Action = "confirm" | "delay" | "unconfirm" | "undelay";
+
+/** Where a visit not confirmed yet is listed, by its date. */
+const sectionOf = (iso: string, today: string) => (iso < today ? "To confirm" : iso === today ? "Today's visits" : "Waiting");
 
 class ApiError extends Error {
   status: number;
@@ -213,8 +236,12 @@ export default function VisitDay({ active }: { active: boolean }) {
   const [editing, setEditing] = useState<string | null>(null);
   const [toDelete, setToDelete] = useState<Visit | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // one Confirm / Delay (or its undo) at a time, until the list is read again
+  const [acting, setActing] = useState<{ id: string; action: Action } | null>(null);
+  const actingRef = useRef(false);
   const [showPrint, setShowPrint] = useState(false);
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const [toast, setToast] = useState<{ id: number; message: string; type: "success" | "error"; undo?: () => void } | null>(null);
+  const toastSeq = useRef(0);
 
   const codeRef = useRef(code);
   codeRef.current = code;
@@ -223,9 +250,11 @@ export default function VisitDay({ active }: { active: boolean }) {
   const boardRef = useRef(board);
   boardRef.current = board;
 
-  const flash = useCallback((message: string, type: "success" | "error" = "success") => {
-    setToast({ message, type });
-    window.setTimeout(() => setToast((t) => (t?.message === message ? null : t)), 4200);
+  /** A message at the top; with `undo`, it has an Undo button and stays longer. */
+  const flash = useCallback((message: string, type: "success" | "error" = "success", undo?: () => void) => {
+    const id = ++toastSeq.current;
+    setToast({ id, message, type, undo });
+    window.setTimeout(() => setToast((t) => (t?.id === id ? null : t)), undo ? UNDO_MS : 4200);
   }, []);
 
   const lock = useCallback((message = "") => {
@@ -372,7 +401,7 @@ export default function VisitDay({ active }: { active: boolean }) {
   };
 
   /** Returns a duplicate (to confirm) or null when saved / handled. */
-  const saveVisit = async (v: Visit, patch: Omit<Visit, "id" | "created_at" | "updated_at">, force = false): Promise<Visit | null> => {
+  const saveVisit = async (v: Visit, patch: Patch, force = false): Promise<Visit | null> => {
     try {
       await call<Visit>(`/${v.id}`, code, {
         method: "PUT",
@@ -413,6 +442,32 @@ export default function VisitDay({ active }: { active: boolean }) {
     }
   };
 
+  /** Confirm visit / Delay visit, and their undo (the Undo button of the message). */
+  const act = async (v: Visit, action: Action) => {
+    if (actingRef.current) return;
+    actingRef.current = true;
+    setActing({ id: v.id, action });
+    try {
+      const item = await call<Visit>(`/${v.id}/${action}`, codeRef.current, {
+        method: "POST",
+        body: JSON.stringify({ expected_updated_at: v.updated_at }),
+      });
+      setEditing((e) => (e === v.id ? null : e));
+      if (action === "confirm") flash(`${v.client}: visit confirmed — moved to Passed visits.`, "success", () => void act(item, "unconfirm"));
+      else if (action === "delay") flash(`${v.client}: visit delayed — moved to “No visit date yet”.`, "success", () => void act(item, "undelay"));
+      else flash(`Undone — ${v.client} is back in ${sectionOf(item.visit_date, boardRef.current?.today ?? "")}.`);
+      await loadAll();
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
+        flash(err.message, "error");
+        await loadAll();
+      } else fail(err);
+    } finally {
+      actingRef.current = false;
+      setActing(null);
+    }
+  };
+
   const goPassed = async (offset: number) => {
     setPassedOffset(offset);
     try {
@@ -427,6 +482,7 @@ export default function VisitDay({ active }: { active: boolean }) {
     const all = [
       ...(board?.no_date ?? []),
       ...(board?.upcoming ?? []),
+      ...(board?.to_confirm ?? []),
       ...(board?.today_visits ?? []),
       ...(passed?.items ?? []),
     ];
@@ -437,6 +493,7 @@ export default function VisitDay({ active }: { active: boolean }) {
 
   const toastEl = toast && (
     <div
+      role="status"
       className={`fixed top-5 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-2.5 px-4 py-2.5 rounded-xl border shadow-2xl backdrop-blur-md animate-[toastIn_.25s_ease] max-w-[calc(100vw-2rem)] ${
         toast.type === "success"
           ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-200"
@@ -445,6 +502,20 @@ export default function VisitDay({ active }: { active: boolean }) {
     >
       {toast.type === "success" ? <CheckCircle2 size={16} className="shrink-0" /> : <AlertTriangle size={16} className="shrink-0" />}
       <span className="text-sm font-medium">{toast.message}</span>
+      {toast.undo && (
+        <button
+          type="button"
+          className="vd-toast-undo"
+          disabled={!!acting}
+          onClick={() => {
+            const undo = toast.undo;
+            setToast(null);
+            undo?.();
+          }}
+        >
+          <Undo2 size={14} /> Undo
+        </button>
+      )}
     </div>
   );
 
@@ -538,7 +609,8 @@ export default function VisitDay({ active }: { active: boolean }) {
   const today = board.today;
   const passedTotal = passed?.total ?? board.passed_total;
   const counts: { id: string; label: string; n: number; cls: string }[] = [
-    { id: "vd-today", label: "Today", n: board.today_visits.length, cls: "vd-dot-green" },
+    { id: "vd-confirm", label: "To confirm", n: board.to_confirm.length, cls: "vd-dot-orange" },
+    { id: "vd-today-list", label: "Today", n: board.today_visits.length, cls: "vd-dot-green" },
     { id: "vd-nodate", label: "No date", n: board.no_date.length, cls: "vd-dot-amber" },
     { id: "vd-waiting", label: "Waiting", n: board.upcoming.length, cls: "vd-dot-blue" },
     { id: "vd-passed", label: "Passed", n: passedTotal, cls: "vd-dot-grey" },
@@ -549,9 +621,13 @@ export default function VisitDay({ active }: { active: boolean }) {
     kind,
     today,
     editing: editing === v.id,
+    acting: acting?.id === v.id ? acting.action : null,
+    busy: acting !== null,
     onEdit: () => setEditing(editing === v.id ? null : v.id),
-    onSave: (patch: Omit<Visit, "id" | "created_at" | "updated_at">, force: boolean) => saveVisit(v, patch, force),
+    onSave: (patch: Patch, force: boolean) => saveVisit(v, patch, force),
     onDelete: () => setToDelete(v),
+    onConfirm: () => void act(v, "confirm"),
+    onDelay: () => void act(v, "delay"),
   });
 
   return (
@@ -570,20 +646,32 @@ export default function VisitDay({ active }: { active: boolean }) {
 
         {showPrint && <PrintCard code={code} today={today} onClose={() => setShowPrint(false)} onError={fail} />}
 
-        {/* Today — pinned first: the most important list */}
+        {/* Today — pinned first: the visits to confirm, then today's, one layout */}
         <Section
           id="vd-today"
           tone="green"
           icon={<CalendarCheck size={18} />}
-          title="Today's visits"
+          title="Today"
           pinned
-          sub={`${weekday(today)} ${isoToDmy(today)}`}
-          count={board.today_visits.length}
-          empty="No visit today."
+          sub={`${weekday(today)} ${isoToDmy(today)} — confirm the visits that happened, delay the others.`}
         >
-          {board.today_visits.map((v) => (
-            <VisitRow key={v.id} {...rowProps(v, "today")} />
-          ))}
+          <Part
+            id="vd-confirm"
+            tone="orange"
+            title="To confirm"
+            hint="The visit day has passed — was the client visited?"
+            count={board.to_confirm.length}
+            empty="Nothing to confirm."
+          >
+            {board.to_confirm.map((v) => (
+              <VisitRow key={v.id} {...rowProps(v, "confirm")} />
+            ))}
+          </Part>
+          <Part id="vd-today-list" tone="green" title="Today's visits" count={board.today_visits.length} empty="No visit today.">
+            {board.today_visits.map((v) => (
+              <VisitRow key={v.id} {...rowProps(v, "today")} />
+            ))}
+          </Part>
         </Section>
 
         {/* Add */}
@@ -647,7 +735,7 @@ export default function VisitDay({ active }: { active: boolean }) {
           tone="amber"
           icon={<CalendarX size={18} />}
           title="No visit date yet"
-          sub="Check the visit day on ALCES, or the visit is not programmed yet."
+          sub="Check the visit day on ALCES, or the visit is not programmed yet. A delayed visit waits here for its new day."
           count={board.no_date.length}
           empty="Every client has a visit date."
         >
@@ -677,7 +765,7 @@ export default function VisitDay({ active }: { active: boolean }) {
           tone="grey"
           icon={<Clock size={18} />}
           title="Passed visits"
-          sub="Latest first."
+          sub="Confirmed visits, latest first."
           count={passedTotal}
           empty="No passed visit yet."
           footer={
@@ -731,6 +819,13 @@ function Field({ label, required, children }: { label: string; required?: boolea
   );
 }
 
+/** The visit rows, or `empty` when there is none. */
+function Rows({ empty, children }: { empty: string; children: ReactNode }) {
+  const hasRows = Array.isArray(children) ? children.length > 0 : !!children;
+  return hasRows ? <div className="divide-y divide-slate-800/80">{children}</div> : <p className="text-sm text-slate-500 py-3">{empty}</p>;
+}
+
+/** A card. Without `empty`, its children are Parts (the Today card). */
 function Section({
   id,
   tone,
@@ -748,20 +843,19 @@ function Section({
   icon: ReactNode;
   title: string;
   sub: string;
-  count: number;
-  empty: string;
+  count?: number;
+  empty?: string;
   footer?: ReactNode;
   pinned?: boolean;
   children: ReactNode;
 }) {
-  const hasRows = Array.isArray(children) ? children.length > 0 : !!children;
   return (
     <section id={id} className={`card mb-5 vd-section vd-section-${tone} scroll-mt-4`}>
       <div className="flex items-center gap-3 mb-3">
         <span className={`vd-icon vd-icon-${tone}`}>{icon}</span>
         <div className="min-w-0 flex-1">
           <h2 className={`${pinned ? "text-lg" : "text-base"} font-bold text-white leading-tight`}>
-            {title} <span className="text-slate-400 font-semibold">({count})</span>
+            {title} {count !== undefined && <span className="text-slate-400 font-semibold">({count})</span>}
           </h2>
           <p className="text-xs text-slate-400">{sub}</p>
         </div>
@@ -771,9 +865,39 @@ function Section({
           </span>
         )}
       </div>
-      {hasRows ? <div className="divide-y divide-slate-800/80">{children}</div> : <p className="text-sm text-slate-500 py-3">{empty}</p>}
+      {empty === undefined ? children : <Rows empty={empty}>{children}</Rows>}
       {footer}
     </section>
+  );
+}
+
+/** One list inside a card (To confirm, Today's visits): same rows as a Section. */
+function Part({
+  id,
+  tone,
+  title,
+  hint,
+  count,
+  empty,
+  children,
+}: {
+  id: string;
+  tone: "orange" | "green";
+  title: string;
+  hint?: string;
+  count: number;
+  empty: string;
+  children: ReactNode;
+}) {
+  return (
+    <div id={id} className="vd-part scroll-mt-4">
+      <h3 className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm font-bold text-white">
+        <span className={`vd-dot vd-dot-${tone}`} />
+        {title} <span className="text-slate-400 font-semibold">({count})</span>
+        {hint && <span className="text-xs font-normal text-slate-400">{hint}</span>}
+      </h3>
+      <Rows empty={empty}>{children}</Rows>
+    </div>
   );
 }
 
@@ -808,44 +932,75 @@ function DuplicateNote({
 
 function DateBadge({ v, kind, today }: { v: Visit; kind: Kind; today: string }) {
   if (kind === "no_date") {
-    const added = v.created_at ? daysBetween(v.created_at.slice(0, 10), today) : 0;
+    // a delayed visit waits for its new day since it was delayed
+    const delay = v.delays?.[v.delays.length - 1];
+    const since = (delay?.at || v.created_at || "").slice(0, 10);
+    const n = since ? daysBetween(since, today) : 0;
+    const what = delay ? "Delayed" : "Added";
     return (
-      <span className={`trk-badge ${added >= 3 ? "trk-badge-amber" : "trk-badge-grey"}`}>
-        {added <= 0 ? "Added today" : added === 1 ? "Added yesterday" : `Added ${added} days ago`}
+      <span className={`trk-badge ${n >= 3 ? "trk-badge-amber" : "trk-badge-grey"}`}>
+        {n <= 0 ? `${what} today` : n === 1 ? `${what} yesterday` : `${what} ${n} days ago`}
       </span>
     );
   }
+  if (kind === "today") return <span className="trk-badge trk-badge-green">Today</span>;
   const d = daysBetween(today, v.visit_date);
-  if (kind === "today" || d === 0) return <span className="trk-badge trk-badge-green">Today</span>;
   if (d > 0) return <span className={`trk-badge ${d <= 2 ? "trk-badge-amber" : "trk-badge-blue"}`}>{d === 1 ? "Tomorrow" : `In ${d} days`}</span>;
-  return <span className="trk-badge trk-badge-grey">{d === -1 ? "Yesterday" : `${-d} days ago`}</span>;
+  const ago = d === 0 ? "Today" : d === -1 ? "Yesterday" : `${-d} days ago`;
+  // to confirm: waiting for an answer — red once it has waited 3 days
+  if (kind === "confirm") return <span className={`trk-badge ${d <= -3 ? "trk-badge-red" : "trk-badge-amber"}`}>{ago}</span>;
+  return <span className="trk-badge trk-badge-grey">{ago}</span>;
 }
 
-type Patch = Omit<Visit, "id" | "created_at" | "updated_at">;
+/** Beside the name of a client whose visit was delayed, in every section. */
+function DelayedStamp({ n, muted }: { n: number; muted?: boolean }) {
+  return (
+    <span
+      className={`vd-stamp ${muted ? "vd-stamp-muted" : ""}`}
+      title={n === 1 ? "This visit was delayed once" : `This visit was delayed ${n} times`}
+    >
+      Delayed{n > 1 ? ` ×${n}` : ""}
+    </span>
+  );
+}
 
 function VisitRow({
   v,
   kind,
   today,
   editing,
+  acting,
+  busy,
   onEdit,
   onSave,
   onDelete,
+  onConfirm,
+  onDelay,
 }: {
   v: Visit;
   kind: Kind;
   today: string;
   editing: boolean;
+  /** Confirm / Delay visit running for this client (its button spins) */
+  acting: Action | null;
+  /** one is running for any client: the buttons wait */
+  busy: boolean;
   onEdit: () => void;
   onSave: (patch: Patch, force: boolean) => Promise<Visit | null>;
   onDelete: () => void;
+  onConfirm: () => void;
+  onDelay: () => void;
 }) {
+  const delays = v.delays ?? [];
+  const due = kind === "confirm" || kind === "today"; // its day has come: confirm or delay
   return (
     <div className="py-3 first:pt-1">
-      <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+      {/* with Confirm / Delay the right side is wide: beside the name on a large screen only */}
+      <div className={`flex flex-col gap-2 ${due ? "lg:flex-row lg:items-center lg:gap-4" : "sm:flex-row sm:items-center sm:gap-4"}`}>
         <div className="min-w-0 flex-1">
           <p className="font-semibold text-slate-100 break-words">
             <bdi>{v.client}</bdi>
+            {delays.length > 0 && <DelayedStamp n={delays.length} muted={kind === "passed"} />}
           </p>
           <p className="mt-0.5 text-xs text-slate-400 flex flex-wrap items-center gap-x-3 gap-y-0.5">
             <span>
@@ -856,9 +1011,14 @@ function VisitRow({
                 <MapPin size={12} className="shrink-0" /> <bdi className="text-slate-300">{v.place}</bdi>
               </span>
             )}
+            {delays.length > 0 && (
+              <span className="inline-flex items-center gap-1" title="The days this visit was planned for, before it was delayed">
+                <History size={12} className="shrink-0" /> Was planned: {delays.map((d) => isoToDmy(d.date)).join(", ")}
+              </span>
+            )}
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap sm:justify-end">
+        <div className={`flex items-center gap-2 flex-wrap ${due ? "lg:justify-end" : "sm:justify-end"}`}>
           {v.visit_date && (
             <span className="text-sm font-semibold text-slate-100 tabular-nums">
               <span className="text-slate-400 font-normal me-1.5 hidden md:inline">{weekday(v.visit_date).slice(0, 3)}</span>
@@ -866,6 +1026,29 @@ function VisitRow({
             </span>
           )}
           <DateBadge v={v} kind={kind} today={today} />
+          {due && (
+            // on a phone: the two buttons side by side on their own line, under the date
+            <span className="order-last sm:order-none basis-full sm:basis-auto grid grid-cols-2 sm:flex gap-2">
+              <button
+                type="button"
+                className="vd-act vd-act-confirm justify-center"
+                onClick={onConfirm}
+                disabled={busy}
+                title="The client was visited — it moves to Passed visits"
+              >
+                {acting === "confirm" ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />} Confirm visit
+              </button>
+              <button
+                type="button"
+                className="vd-act vd-act-delay justify-center"
+                onClick={onDelay}
+                disabled={busy}
+                title="Not visited — the date is removed: the client waits in “No visit date yet”, stamped Delayed"
+              >
+                {acting === "delay" ? <Loader2 size={15} className="animate-spin" /> : <CalendarX size={15} />} Delay visit
+              </button>
+            </span>
+          )}
           <button type="button" className="etq-icon-btn" onClick={onEdit} title={kind === "no_date" ? "Edit / set the visit day" : "Edit"} aria-label="Edit">
             {editing ? <X size={15} /> : <Pencil size={15} />}
           </button>
@@ -1128,7 +1311,7 @@ function PrintCard({
           {busy ? <Loader2 size={16} className="animate-spin" /> : <FileDown size={16} />} Download PDF
         </button>
         <p className="text-xs text-slate-400">
-          {summary} Sections: no visit date yet, waiting, passed — today's visits are not printed.
+          {summary} Sections: no visit date yet, waiting, to confirm, passed — today's visits not confirmed yet are not printed.
         </p>
       </div>
       {error && <p className="mt-2 text-sm text-rose-300">{error}</p>}

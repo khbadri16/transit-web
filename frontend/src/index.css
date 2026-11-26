@@ -1072,6 +1072,7 @@ body {
 .vd-dot-blue { background: #3b82f6; }
 .vd-dot-green { background: #22c55e; }
 .vd-dot-grey { background: #64748b; }
+.vd-dot-orange { background: #f97316; }
 .card.vd-section {
   border-left-width: 3px;
 }
@@ -1110,4 +1111,93 @@ body {
   color: #fecdd3;
   background: rgba(244, 63, 94, 0.18);
   border-color: rgba(251, 113, 133, 0.5);
+}
+/* the Today card: "To confirm" then "Today's visits", one layout */
+.vd-part > h3 {
+  margin-bottom: 0.15rem;
+}
+.vd-part + .vd-part {
+  margin-top: 0.75rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+}
+/* Confirm visit / Delay visit — as tall as the icon buttons beside them */
+.vd-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 34px;
+  padding: 0 0.7rem;
+  border-radius: 0.6rem;
+  border: 1px solid;
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.vd-act:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.vd-act-confirm {
+  color: #bbf7d0;
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(74, 222, 128, 0.45);
+}
+.vd-act-confirm:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(34, 197, 94, 0.28);
+}
+.vd-act-delay {
+  color: #fed7aa;
+  background: rgba(249, 115, 22, 0.12);
+  border-color: rgba(251, 146, 60, 0.45);
+}
+.vd-act-delay:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(249, 115, 22, 0.26);
+}
+/* "Delayed": a rubber stamp beside the client's name */
+.vd-stamp {
+  display: inline-block;
+  margin-inline-start: 0.55rem;
+  padding: 0.05rem 0.4rem;
+  border: 2px solid rgba(251, 113, 133, 0.8);
+  border-radius: 0.3rem;
+  box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.3);
+  color: #fda4af;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1.35;
+  text-transform: uppercase;
+  white-space: nowrap;
+  vertical-align: 0.1em;
+  transform: rotate(-4deg);
+}
+.vd-stamp-muted {
+  color: #94a3b8;
+  border-color: rgba(148, 163, 184, 0.45);
+  box-shadow: none;
+}
+.vd-toast-undo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-inline-start: 0.25rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.vd-toast-undo:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2);
+}
+.vd-toast-undo:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

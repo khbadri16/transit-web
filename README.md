@@ -108,8 +108,8 @@ ENDI, Autorisation or other paper, and every client stamp (Cachet), that
 someone takes or gives back: one line per movement (Date & time · Client ·
 Document · Person · أخذ / أرجع) in the same Google Sheet, "Documents" and
 "Stamps" tables. Each section shows what is still out (the latest movement of
-that client + document is أخذ) and the last 20 movements; "أرجع" on a line
-still out fills the form. Routes `GET/POST /api/papers/{documents|stamps}`
+that client + document is أخذ) and the last 3 movements (every movement is in
+the sheet); "أرجع" on a line still out fills the form. Routes `GET/POST /api/papers/{documents|stamps}`
 (`frontend/api/cover_sheet.py`). It needs `Code.gs` version 2: until the
 script in the sheet is replaced by it (steps at the top of `Code.gs`), the
 sections say "Not ready yet" and nothing is written — a version 1 script
@@ -117,9 +117,21 @@ refuses these requests, it never writes them as client lines.
 
 A fourth page, **Visit day** (`#/visit-day`), is the office's shared list of
 customs visit days, saved on the server in Upstash Redis
-(`frontend/api/visit_days.py`, routes `/api/visits/...`): no visit date yet /
-waiting / today / passed (10 per page), plus a French PDF of the clients added
-in a period (`frontend/api/visits_pdf.py`). It needs these Vercel environment
+(`frontend/api/visit_days.py`, routes `/api/visits/...`). The pinned **Today**
+card shows, in one layout, **To confirm** (the visit day has passed and
+nobody confirmed it yet) then **Today's visits**. Each of their clients has
+**Confirm visit** (it happened → Passed visits) and **Delay visit** (it did
+not: the date is removed and the client waits in "No visit date yet" until
+the new day is typed with ✏️). From then on a red **Delayed** stamp stays
+beside its name in every section (×2, ×3… when delayed again, with the day it
+was planned for), so a delayed visit waiting for its new day is told apart
+from one waiting for the first time. Both buttons can be undone from the
+message they show. Then: no visit date yet / waiting / passed (confirmed
+visits, 10 per page), plus a French PDF of the clients added in a period
+(`frontend/api/visits_pdf.py`, with "Visites à confirmer" and "Visite
+reportée" under a delayed client). The visits whose day had passed before
+Confirm / Delay existed count as visited: they are moved once, the first time
+the new version reads the list. It needs these Vercel environment
 variables:
 
 | Variable | What |

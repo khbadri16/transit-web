@@ -8,13 +8,17 @@ import { useCoverCode } from "./coverCode";
  *
  * Every movement is one line in the clients Google Sheet ("Documents" or
  * "Stamps" table, written by the server — api/cover_sheet.py, Code.gs v2).
- * The page shows what is still out (latest movement = أخذ) and the last
+ * The page shows what is still out (latest movement = أخذ) and the last 3
  * movements. Same private code as the Folder cover.
  * ======================================================================== */
 
 const API_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
 const SCRIPT_LINK = "https://github.com/khbadri16/transit-web/blob/main/cover-sheet/Code.gs";
 const REFRESH = "papers-refresh";
+/** "Last movements" shows this many, so the section stays short (every
+ *  movement is in the sheet). The server sends more: they also feed the
+ *  client suggestions of the form. */
+const SHOWN_MOVEMENTS = 3;
 
 type Table = "documents" | "stamps";
 type Movement = "took" | "returned";
@@ -500,7 +504,7 @@ export default function PaperTracker({ table }: { table: Table }) {
                       <p className="text-sm text-slate-500">No movement written yet.</p>
                     ) : (
                       <ul className="divide-y divide-slate-800/80 rounded-xl border border-slate-800 bg-slate-900/30">
-                        {data.recent.map((l, i) => (
+                        {data.recent.slice(0, SHOWN_MOVEMENTS).map((l, i) => (
                           <li key={i} className="px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
                             {moveBadge(l)}
                             <span className="min-w-0 flex-1 break-words">

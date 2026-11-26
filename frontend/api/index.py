@@ -1190,6 +1190,20 @@ def visits_delete(item_id: str, request: Request, x_visit_code: str = Header("")
     return _visit_call(request, x_visit_code, run)
 
 
+class VisitActionIn(BaseModel):
+    expected_updated_at: str = ""   # only if nobody changed it meanwhile
+
+
+VisitAction = Literal["confirm", "delay", "unconfirm", "undelay"]
+
+
+@app.post("/api/visits/{item_id}/{action}")
+def visits_action(item_id: str, action: VisitAction, req: VisitActionIn, request: Request,
+                  x_visit_code: str = Header("")):
+    """Confirm visit / Delay visit once the visit day has come, and their undo."""
+    return _visit_call(request, x_visit_code, _vd().ACTIONS[action], item_id, req.expected_updated_at)
+
+
 @app.post("/api/visits/pdf")
 def visits_pdf(req: VisitPdfIn, request: Request, x_visit_code: str = Header("")):
     vd = _vd()

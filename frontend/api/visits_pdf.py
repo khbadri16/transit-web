@@ -1,14 +1,16 @@
 """
 Visit day — printable list (PDF, French)
 ----------------------------------------
-Clients added during the chosen period, in three sections:
+Clients added during the chosen period, in four sections:
 
-    1. Sans date de visite   (no visit date yet)
+    1. Sans date de visite   (no visit date yet — a delayed visit is here too)
     2. Visites à venir       (visit date after today, soonest first)
-    3. Visites passées       (visit date before today, latest first)
+    3. Visites à confirmer   (visit date before today, not confirmed yet)
+    4. Visites passées       (visit confirmed, latest first)
 
-Today's visits are NOT printed (they are on the page). Arabic client names
-are shaped with arabic-reshaper + python-bidi, like the other PDFs.
+Today's visits not confirmed yet are NOT printed (they are on the page). A
+client whose visit was delayed has "Visite reportée" under its name. Arabic
+client names are shaped with arabic-reshaper + python-bidi, like the other PDFs.
 """
 
 import io
@@ -36,6 +38,7 @@ SECTIONS = [
     # key, title, accent colour
     ("no_date", "Sans date de visite", (217, 119, 6)),
     ("upcoming", "Visites à venir", (37, 99, 235)),
+    ("to_confirm", "Visites à confirmer", (225, 29, 72)),
     ("passed", "Visites passées", (71, 85, 105)),
 ]
 COLUMNS = [  # title, width (mm), alignment
@@ -97,24 +100,32 @@ def _cell_text(pdf: FPDF, text: str, width: float) -> str:
 def _sort(key: str, items: List[dict]) -> List[dict]:
     if key == "no_date":
         return sorted(items, key=lambda it: it.get("created_at", ""))
-    if key == "upcoming":
+    if key in ("upcoming", "to_confirm"):
         return sorted(items, key=lambda it: (it.get("visit_date", ""), it.get("client", "").lower()))
     return sorted(items, key=lambda it: (it.get("visit_date", ""), it.get("created_at", "")), reverse=True)
 
 
 def split_sections(items: Iterable[dict], today: date) -> dict:
     t = today.isoformat()
-    out = {"no_date": [], "upcoming": [], "passed": []}
+    out = {"no_date": [], "upcoming": [], "to_confirm": [], "passed": []}
     for it in items:
         d = it.get("visit_date") or ""
         if not d:
             out["no_date"].append(it)
+        elif it.get("visited"):
+            out["passed"].append(it)
         elif d > t:
             out["upcoming"].append(it)
         elif d < t:
-            out["passed"].append(it)
-        # d == today: not printed
+            out["to_confirm"].append(it)
+        # today, not confirmed yet: not printed
     return {k: _sort(k, v) for k, v in out.items()}
+
+
+def _delayed(it: dict) -> str:
+    """'Visite reportée' (+ how many times) when "Delay visit" was pressed."""
+    n = sum(1 for d in it.get("delays") or [] if isinstance(d, dict) and d.get("date"))
+    return "" if not n else "Visite reportée" if n == 1 else f"Visite reportée {n} fois"
 
 
 def build_visits_pdf(items: Iterable[dict], today: date, start: Optional[date], end: Optional[date],
@@ -128,7 +139,7 @@ def build_visits_pdf(items: Iterable[dict], today: date, start: Optional[date], 
     pdf.add_font("plex", "B", str(FONT_BOLD))
     pdf.set_title("Jours de visite")
     pdf.set_creator("Transit Document Generator")
-    pdf.footer_note = f"Les visites du jour ({today.strftime('%d/%m/%Y')}) ne sont pas incluses."
+    pdf.footer_note = f"Les visites du jour ({today.strftime('%d/%m/%Y')}) pas encore confirmées ne sont pas incluses."
     pdf.alias_nb_pages()
     pdf.add_page()
     full_w = pdf.w - 2 * MARGIN
@@ -153,7 +164,8 @@ def build_visits_pdf(items: Iterable[dict], today: date, start: Optional[date], 
     pdf.ln(2)
 
     # summary boxes
-    box_w, gap = (full_w - 2 * 4) / 3, 4
+    gap = 4
+    box_w = (full_w - (len(SECTIONS) - 1) * gap) / len(SECTIONS)
     y = pdf.get_y()
     for i, (key, title, color) in enumerate(SECTIONS):
         x = MARGIN + i * (box_w + gap)
@@ -217,10 +229,10 @@ def build_visits_pdf(items: Iterable[dict], today: date, start: Optional[date], 
                 r.cell(str(n))
                 for col, field in ((1, "client"), (2, "declaration"), (3, "place")):
                     text = it.get(field, "") or ("—" if field == "place" else "")
-                    r.cell(
-                        _cell_text(pdf, text, widths[col] - 2 * CELL_PAD_X - 0.5),
-                        align="RIGHT" if _AR_RE.search(text) else None,   # Arabic reads from the right
-                    )
+                    cell = _cell_text(pdf, text, widths[col] - 2 * CELL_PAD_X - 0.5)
+                    if field == "client" and _delayed(it):
+                        cell += f"\n{_delayed(it)}"
+                    r.cell(cell, align="RIGHT" if _AR_RE.search(text) else None)   # Arabic reads from the right
                 r.cell(_fr_date(it.get("visit_date", "")) or "Pas encore")
                 r.cell(_fr_date(it.get("created_at", "")))
         pdf.ln(6)
